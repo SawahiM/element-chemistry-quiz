@@ -69,6 +69,9 @@ button { color: inherit; }
 .topbar-button { border: 1px solid var(--ink); border-radius: 9px; background: var(--ink); color: white; padding: 8px 13px; cursor: pointer; font-size: 12px; font-weight: 700; }
 .topbar-button:hover { background: #243d5d; }
 .topbar-link { text-decoration: none; }
+.quiz-switch { display: flex; padding: 3px; border: 1px solid #cec8bc; border-radius: 10px; background: #f1eee5; }
+.quiz-switch button { border: 0; border-radius: 7px; background: transparent; padding: 6px 10px; cursor: pointer; color: var(--ink-soft); font-size: 10px; font-weight: 750; }
+.quiz-switch button.active { background: #fffefa; color: var(--teal-dark); box-shadow: 0 1px 5px rgba(23, 38, 58, .12); }
 .exam-clock { display: flex; align-items: baseline; gap: 10px; border: 1px solid #b9d5d1; background: var(--teal-pale); color: var(--teal-dark); padding: 7px 12px; border-radius: 10px; }
 .exam-clock span { font-size: 10px; font-weight: 700; }
 .exam-clock b { font: 700 19px/1 Georgia, serif; letter-spacing: .05em; }
@@ -359,10 +362,64 @@ footer { min-height: 38px; display: flex; justify-content: center; gap: 38px; al
 .exam-screen > .element-scope-control > div:first-child { display: flex; align-items: baseline; justify-content: space-between; gap: 18px; }
 .exam-screen > .element-scope-control .scope-control-actions { display: flex; }
 
+.equation-app { --eq-blue: #264f75; }
+.equation-app .quiz-card::before { background: linear-gradient(90deg, var(--eq-blue) 0 68%, var(--amber) 68%); }
+.equation-app .type-tag { background: #e7eef5; color: var(--eq-blue); }
+.equation-options { display: grid; gap: 7px; margin: 15px 5px 0; padding-top: 14px; border-top: 1px solid var(--line); }
+.equation-options label { display: grid; grid-template-columns: 18px 1fr; align-items: start; gap: 8px; padding: 9px; border: 1px solid #d5d0c5; border-radius: 10px; background: #fffefa; cursor: pointer; }
+.equation-options input { margin: 2px 0 0; accent-color: var(--teal); }
+.equation-options b, .equation-options small { display: block; }
+.equation-options b { font-size: 11px; }
+.equation-options small { margin-top: 3px; color: var(--ink-soft); font-size: 9px; }
+.equation-card { min-height: 730px; }
+.equation-prompt { padding: 28px 0 10px; text-align: center; }
+.equation-prompt > span { color: var(--ink-soft); font-size: 12px; }
+.equation-prompt h1 { margin: 5px 0 0; font: 650 22px/1.35 "Noto Serif SC", "Songti SC", serif; }
+.equation-composer { min-height: 172px; display: grid; grid-template-columns: minmax(190px, 1fr) 110px minmax(190px, 1fr); align-items: center; gap: 14px; padding: 19px; border: 1px solid #cfd7df; border-radius: 15px; background: linear-gradient(145deg, #fffefa, #f4f7fa); }
+.equation-side { min-width: 0; display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 9px; }
+.eq-visible-part { display: inline-flex; align-items: center; gap: 8px; font-size: clamp(20px, 2.2vw, 30px); }
+.eq-plus { color: var(--ink-soft); font: 500 22px/1 Georgia, serif; }
+.equation-arrow { min-width: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; color: var(--eq-blue); }
+.equation-arrow span { max-width: 120px; min-height: 28px; display: grid; place-items: end center; padding-bottom: 3px; color: var(--ink-soft); font-size: 9px; line-height: 1.35; text-align: center; }
+.equation-arrow b { font: 500 36px/1 Georgia, serif; }
+.eq-answer-side { width: 100%; display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 7px; }
+.eq-answer-slot { display: inline-flex; align-items: center; gap: 6px; position: relative; }
+.eq-answer-slot input { width: 142px; border: 1px solid #9baaba; border-radius: 9px; background: white; padding: 11px 28px 11px 11px; color: var(--ink); font: 700 16px/1.2 Consolas, "Noto Sans SC", sans-serif; outline: none; }
+.eq-answer-slot input:focus, .eq-answer-slot input[data-active="true"] { border-color: var(--eq-blue); box-shadow: 0 0 0 3px rgba(38,79,117,.13); }
+.eq-answer-slot input:disabled { opacity: 1; background: #f1eee7; }
+.eq-remove { position: absolute; right: 5px; width: 22px; height: 22px; display: grid; place-items: center; border: 0; border-radius: 6px; background: transparent; color: #8a302b; cursor: pointer; }
+.eq-add { border: 1px dashed #91a2b3; border-radius: 9px; background: transparent; padding: 10px 12px; color: var(--eq-blue); cursor: pointer; font-size: 10px; font-weight: 750; }
+.touch-keyboard { margin-top: 18px; padding: 15px; border: 1px solid #d7d1c6; border-radius: 14px; background: #f3f0e8; }
+.keyboard-heading { display: flex; align-items: baseline; gap: 10px; margin-bottom: 10px; }
+.keyboard-heading span { font-size: 11px; font-weight: 800; letter-spacing: .08em; }
+.keyboard-heading small { color: var(--ink-soft); font-size: 9px; }
+.keyboard-layout { display: grid; grid-template-columns: 1fr 178px; gap: 14px; }
+.element-key-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(42px, 1fr)); gap: 6px; align-content: start; }
+.element-key-grid button, .number-keypad button { min-height: 38px; border: 1px solid #c6c0b5; border-radius: 8px; background: #fffefa; cursor: pointer; color: var(--ink); font: 750 13px/1 Georgia, "Noto Sans SC", sans-serif; box-shadow: 0 1px 2px rgba(23,38,58,.06); }
+.element-key-grid button:hover, .number-keypad button:hover { border-color: var(--eq-blue); color: var(--eq-blue); transform: translateY(-1px); }
+.element-key-grid .symbol-key { background: #e8edf2; color: var(--eq-blue); }
+.number-keypad { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; padding-left: 13px; border-left: 1px solid #d0c9bd; }
+.number-keypad button { font-size: 14px; }
+.number-keypad .backspace-key { background: var(--ink); color: white; }
+.scope-element-grid { grid-template-columns: repeat(auto-fill, minmax(44px, 1fr)); margin-top: 22px; padding-top: 20px; border-top: 1px solid var(--line); }
+.scope-element-grid button.selected { border-color: var(--teal); background: var(--teal-pale); color: var(--teal-dark); box-shadow: inset 0 0 0 1px var(--teal); }
+.equation-reference { margin: 5px 0 20px; padding: 18px 12px; overflow-x: auto; border: 1px solid #b9d5d1; border-radius: 12px; background: var(--teal-pale); color: var(--teal-dark); text-align: center; font-size: 21px; }
+.equation-app .evidence-card p { color: #445267; font: 12px/1.75 "Noto Serif SC", "Songti SC", serif; white-space: pre-wrap; }
+.equation-app .evidence-heading span { color: var(--ink-soft); font-size: 9px; white-space: nowrap; }
+.equation-exam-counts { grid-template-columns: repeat(2, 1fr); }
+.exam-option-summary { display: flex; justify-content: center; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
+.exam-option-summary span, .exam-option-summary button { border: 1px solid #c9c3b8; border-radius: 999px; background: #f6f3eb; padding: 6px 10px; color: var(--ink-soft); font-size: 10px; }
+.exam-option-summary button { cursor: pointer; color: var(--teal-dark); }
+.equation-review-body p { font-size: 12px; }
+.equation-review-body blockquote { margin: 18px 0; padding: 13px 15px; border-left: 3px solid var(--teal); background: #f3f0e8; color: var(--ink-soft); font: 12px/1.75 "Noto Serif SC", serif; white-space: pre-wrap; }
+
 @media (max-width: 1120px) {
   .workspace { grid-template-columns: 210px minmax(500px, 1fr); }
   .source-panel { grid-column: 2; }
   .source-placeholder { padding: 24px; }
+  .equation-composer { grid-template-columns: 1fr; }
+  .equation-arrow { min-height: 62px; }
+  .equation-arrow b { transform: rotate(90deg); }
 }
 @media (max-width: 780px) {
   .topbar { height: auto; padding: 16px 18px; gap: 15px; align-items: flex-start; }
@@ -395,6 +452,13 @@ footer { min-height: 38px; display: flex; justify-content: center; gap: 38px; al
   .scope-modal-body { padding: 16px; }
   .scope-modal-footer { padding: 12px 16px; }
   .chapter-group-grid, .preset-grid { grid-template-columns: 1fr 1fr; }
+  .quiz-switch { order: 2; width: 100%; }
+  .quiz-switch button { flex: 1; }
+  .equation-card { min-height: auto; }
+  .keyboard-layout { grid-template-columns: 1fr; }
+  .number-keypad { grid-template-columns: repeat(6, 1fr); padding: 12px 0 0; border-left: 0; border-top: 1px solid #d0c9bd; }
+  .equation-composer { padding: 15px 10px; }
+  .equation-exam-counts { grid-template-columns: 1fr; }
 }
 @media (max-width: 520px) {
   .chapter-group-grid, .preset-grid { grid-template-columns: 1fr; }

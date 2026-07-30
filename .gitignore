@@ -42,5 +42,6 @@ next-env.d.ts
 /work/
 /release/
 /data/
+/public/book-pages/
 __pycache__/
 *.pyc

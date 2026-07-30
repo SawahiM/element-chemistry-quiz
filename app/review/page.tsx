@@ -39,6 +39,9 @@ type Reaction = {
   parseStatus: "parsed" | "needs_review";
   isExercise: boolean;
   uncertaintyFlags: string[];
+  isManualEdit: boolean;
+  manualEditUpdatedAt: string | null;
+  reviewStatus: "unreviewed" | "verified" | "rejected";
   participants: Participant[];
   conditions: Condition[];
   source: {
@@ -63,6 +66,12 @@ type Dataset = {
     uncheckableCount: number;
     conditionsCount: number;
     pagesScanned: number;
+    electronReactionCount: number;
+    electronParticipantCount: number;
+    manualEditCount: number;
+    verifiedReviewCount: number;
+    rejectedReviewCount: number;
+    unreviewedCount: number;
   };
   reactions: Reaction[];
 };
@@ -79,9 +88,32 @@ type ReviewMap = Record<string, ReviewDecision>;
 type QualityFilter = "all" | "ready" | "priority" | "imbalanced" | "uncheckable";
 type KindFilter = "all" | Reaction["equationKind"];
 type DecisionFilter = "all" | "unreviewed" | DecisionValue;
+type EditableParticipant = {
+  clientId: string;
+  side: "reactant" | "product";
+  formulaCanonical: string;
+  coefficientNum: number;
+  coefficientDen: number;
+  phase: Participant["phase"];
+  formationMarker: Participant["formationMarker"];
+};
+type EditableCondition = {
+  clientId: string;
+  type: string;
+  rawText: string;
+  relatedFormula: string;
+};
+type ReactionDraft = {
+  direction: string;
+  participants: EditableParticipant[];
+  conditions: EditableCondition[];
+};
+type SaveState = "idle" | "saving" | "saved" | "error";
 
 const STORAGE_KEY = "element-chemistry-reaction-review-v1";
+const EDIT_API = "http://localhost:3101";
 const PAGE_SIZE = 60;
+const DEFAULT_IMAGE_ZOOM = 100;
 
 const KIND_LABELS: Record<Reaction["equationKind"], string> = {
   molecular: "分子反应",
@@ -129,6 +161,60 @@ function decisionLabel(decision?: ReviewDecision): string {
   if (decision.decision === "verified") return "已确认";
   if (decision.decision === "needs_correction") return "需修订";
   return "已排除";
+}
+
+function bookPageImageUrl(pdfPage: number): string {
+  return `/book-pages/pdf_${String(pdfPage).padStart(4, "0")}.jpeg`;
+}
+
+function clientId(prefix: string, index = 0): string {
+  return `${prefix}-${Date.now()}-${index}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function draftFromReaction(reaction: Reaction): ReactionDraft {
+  return {
+    direction: reaction.direction,
+    participants: reaction.participants.map((participant, index) => ({
+      clientId: clientId("participant", index),
+      side: participant.side,
+      formulaCanonical: participant.formulaCanonical || participant.formulaRaw,
+      coefficientNum: participant.coefficientNum,
+      coefficientDen: participant.coefficientDen,
+      phase: participant.phase,
+      formationMarker: participant.formationMarker,
+    })),
+    conditions: reaction.conditions.map((condition, index) => ({
+      clientId: clientId("condition", index),
+      type: condition.type,
+      rawText: condition.rawText,
+      relatedFormula: condition.relatedFormula || "",
+    })),
+  };
+}
+
+function editableParticipantDisplay(participant: EditableParticipant): string {
+  const coefficient = participant.coefficientDen === 1
+    ? (participant.coefficientNum === 1 ? "" : String(participant.coefficientNum))
+    : `${participant.coefficientNum}/${participant.coefficientDen}`;
+  const phase = participant.phase ? `(${participant.phase})` : "";
+  const marker = participant.formationMarker === "gas_release"
+    ? "↑"
+    : participant.formationMarker === "precipitate"
+      ? "↓"
+      : "";
+  return `${coefficient}${participant.formulaCanonical}${phase}${marker}`;
+}
+
+function equationFromDraft(draft: ReactionDraft): string | null {
+  const renderSide = (side: "reactant" | "product") => draft.participants
+    .filter((participant) => participant.side === side && participant.formulaCanonical.trim())
+    .map(editableParticipantDisplay)
+    .join(" + ");
+  const reactants = renderSide("reactant");
+  const products = renderSide("product");
+  if (!reactants || !products) return null;
+  const arrow = draft.direction === "irreversible" ? "->" : "<=>";
+  return `${reactants} ${arrow} ${products}`;
 }
 
 function splitEquation(value: string): { left: string[]; right: string[]; arrow: string } | null {
@@ -237,12 +323,19 @@ export default function ReactionReviewPage() {
   const [data, setData] = useState<Dataset | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
-  const [qualityFilter, setQualityFilter] = useState<QualityFilter>("all");
+  const [qualityFilter, setQualityFilter] = useState<QualityFilter>("priority");
   const [kindFilter, setKindFilter] = useState<KindFilter>("all");
   const [decisionFilter, setDecisionFilter] = useState<DecisionFilter>("all");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [page, setPage] = useState(0);
   const [reviews, setReviews] = useState<ReviewMap>({});
+  const [imageZoom, setImageZoom] = useState(DEFAULT_IMAGE_ZOOM);
+  const [editorOpen, setEditorOpen] = useState(false);
+  const [draft, setDraft] = useState<ReactionDraft | null>(null);
+  const [saveState, setSaveState] = useState<SaveState>("idle");
+  const [saveMessage, setSaveMessage] = useState("");
+  const [editServiceAvailable, setEditServiceAvailable] = useState<boolean | null>(null);
+  const [manualEditIds, setManualEditIds] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     setReviews(loadReviewMap());
@@ -256,6 +349,16 @@ export default function ReactionReviewPage() {
         setSelectedId(payload.reactions[0]?.id || null);
       })
       .catch((reason: Error) => setError(reason.message));
+    fetch(`${EDIT_API}/api/edits`)
+      .then((response) => {
+        if (!response.ok) throw new Error("本地保存服务不可用");
+        return response.json();
+      })
+      .then((payload: { editIds: string[] }) => {
+        setManualEditIds(new Set(payload.editIds || []));
+        setEditServiceAvailable(true);
+      })
+      .catch(() => setEditServiceAvailable(false));
   }, []);
 
   const persistReviews = useCallback((next: ReviewMap) => {
@@ -273,7 +376,11 @@ export default function ReactionReviewPage() {
         || quality === qualityFilter
         || (qualityFilter === "priority" && quality !== "ready");
       const kindMatch = kindFilter === "all" || reaction.equationKind === kindFilter;
-      const reviewValue = review?.decision || "unreviewed";
+      const reviewValue = reaction.reviewStatus !== "unreviewed"
+        ? reaction.reviewStatus
+        : reaction.balanceStatus === "balanced"
+          ? "verified"
+          : review?.decision || "unreviewed";
       const decisionMatch = decisionFilter === "all" || reviewValue === decisionFilter;
       const searchMatch = !needle || [
         reaction.equationCanonical,
@@ -300,9 +407,22 @@ export default function ReactionReviewPage() {
   const selected = data?.reactions.find((reaction) => reaction.id === selectedId) || null;
   const pageCount = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const visible = filtered.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
-  const reviewedCount = Object.keys(reviews).length;
-  const verifiedCount = Object.values(reviews).filter((item) => item.decision === "verified").length;
+  const reviewedCount = data
+    ? data.reactions.filter((reaction) => (
+        reaction.reviewStatus !== "unreviewed"
+        || (reaction.balanceStatus === "balanced" && reaction.reviewStatus !== "rejected")
+        || Boolean(reviews[reaction.id])
+      )).length
+    : 0;
   const currentIndex = selected ? filtered.findIndex((reaction) => reaction.id === selected.id) : -1;
+
+  useEffect(() => {
+    setImageZoom(DEFAULT_IMAGE_ZOOM);
+    if (selected) setDraft(draftFromReaction(selected));
+    setEditorOpen(false);
+    setSaveState("idle");
+    setSaveMessage("");
+  }, [selected?.id]);
 
   const updateDecision = useCallback((decision: DecisionValue) => {
     if (!selected) return;
@@ -364,6 +484,186 @@ export default function ReactionReviewPage() {
     setPage(Math.floor(nextIndex / PAGE_SIZE));
   }, [currentIndex, filtered]);
 
+  const updateDraftParticipant = useCallback((
+    itemId: string,
+    patch: Partial<EditableParticipant>,
+  ) => {
+    setDraft((current) => current ? {
+      ...current,
+      participants: current.participants.map((participant) => (
+        participant.clientId === itemId ? { ...participant, ...patch } : participant
+      )),
+    } : current);
+    setSaveState("idle");
+  }, []);
+
+  const addDraftParticipant = useCallback((side: "reactant" | "product") => {
+    setDraft((current) => current ? {
+      ...current,
+      participants: [
+        ...current.participants,
+        {
+          clientId: clientId("participant"),
+          side,
+          formulaCanonical: "",
+          coefficientNum: 1,
+          coefficientDen: 1,
+          phase: null,
+          formationMarker: null,
+        },
+      ],
+    } : current);
+    setSaveState("idle");
+  }, []);
+
+  const removeDraftParticipant = useCallback((itemId: string) => {
+    setDraft((current) => current ? {
+      ...current,
+      participants: current.participants.filter((participant) => participant.clientId !== itemId),
+    } : current);
+    setSaveState("idle");
+  }, []);
+
+  const updateDraftCondition = useCallback((
+    itemId: string,
+    patch: Partial<EditableCondition>,
+  ) => {
+    setDraft((current) => current ? {
+      ...current,
+      conditions: current.conditions.map((condition) => (
+        condition.clientId === itemId ? { ...condition, ...patch } : condition
+      )),
+    } : current);
+    setSaveState("idle");
+  }, []);
+
+  const addDraftCondition = useCallback(() => {
+    setDraft((current) => current ? {
+      ...current,
+      conditions: [
+        ...current.conditions,
+        {
+          clientId: clientId("condition"),
+          type: "other",
+          rawText: "",
+          relatedFormula: "",
+        },
+      ],
+    } : current);
+    setSaveState("idle");
+  }, []);
+
+  const removeDraftCondition = useCallback((itemId: string) => {
+    setDraft((current) => current ? {
+      ...current,
+      conditions: current.conditions.filter((condition) => condition.clientId !== itemId),
+    } : current);
+    setSaveState("idle");
+  }, []);
+
+  const reloadDataset = useCallback(async (keepSelectedId: string) => {
+    const response = await fetch(`/reactions.review.v1.json?updated=${Date.now()}`, {
+      cache: "no-store",
+    });
+    if (!response.ok) throw new Error(`数据刷新失败：${response.status}`);
+    const payload = await response.json() as Dataset;
+    setData(payload);
+    setSelectedId(keepSelectedId);
+    return payload.reactions.find((reaction) => reaction.id === keepSelectedId) || null;
+  }, []);
+
+  const saveDraft = useCallback(async () => {
+    if (!selected || !draft) return;
+    const reactants = draft.participants.filter((item) => item.side === "reactant" && item.formulaCanonical.trim());
+    const products = draft.participants.filter((item) => item.side === "product" && item.formulaCanonical.trim());
+    if (!reactants.length || !products.length) {
+      setSaveState("error");
+      setSaveMessage("反应物和产物至少各保留一项。");
+      return;
+    }
+    setSaveState("saving");
+    setSaveMessage("正在写入本地数据并重新校验……");
+    try {
+      const response = await fetch(`${EDIT_API}/api/edits/${encodeURIComponent(selected.id)}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          direction: draft.direction,
+          participants: draft.participants
+            .filter((participant) => participant.formulaCanonical.trim())
+            .map((participant) => ({
+              side: participant.side,
+              formulaCanonical: participant.formulaCanonical.trim(),
+              coefficientNum: participant.coefficientNum,
+              coefficientDen: participant.coefficientDen,
+              phase: participant.phase,
+              formationMarker: participant.formationMarker,
+            })),
+          conditions: draft.conditions
+            .filter((condition) => condition.rawText.trim())
+            .map((condition) => ({
+              type: condition.type,
+              rawText: condition.rawText.trim(),
+              relatedFormula: condition.relatedFormula.trim() || null,
+            })),
+        }),
+      });
+      const result = await response.json() as {
+        ok: boolean;
+        error?: string;
+        balanceStatus?: Reaction["balanceStatus"];
+      };
+      if (!response.ok || !result.ok) throw new Error(result.error || "保存失败");
+      const refreshed = await reloadDataset(selected.id);
+      setManualEditIds((current) => new Set([...current, selected.id]));
+      setEditServiceAvailable(true);
+      const nextReviews = {
+        ...reviews,
+        [selected.id]: {
+          decision: refreshed?.balanceStatus === "balanced" ? "verified" as const : "needs_correction" as const,
+          correctedEquation: refreshed?.equationCanonical || "",
+          note: reviews[selected.id]?.note || "",
+          updatedAt: new Date().toISOString(),
+        },
+      };
+      persistReviews(nextReviews);
+      setSaveState("saved");
+      setSaveMessage(
+        refreshed?.balanceStatus === "balanced"
+          ? "已保存到正式数据，重新检查后配平通过。"
+          : "已保存到正式数据，并保留在异常复核队列中。",
+      );
+    } catch (reason) {
+      setEditServiceAvailable(false);
+      setSaveState("error");
+      setSaveMessage(reason instanceof Error ? reason.message : "保存失败");
+    }
+  }, [draft, persistReviews, reloadDataset, reviews, selected]);
+
+  const removeManualEdit = useCallback(async () => {
+    if (!selected || !manualEditIds.has(selected.id)) return;
+    setSaveState("saving");
+    setSaveMessage("正在恢复 OCR 提取结果……");
+    try {
+      const response = await fetch(`${EDIT_API}/api/edits/${encodeURIComponent(selected.id)}`, {
+        method: "DELETE",
+      });
+      const result = await response.json() as { ok: boolean; error?: string };
+      if (!response.ok || !result.ok) throw new Error(result.error || "恢复失败");
+      await reloadDataset(selected.id);
+      setManualEditIds((current) => {
+        const next = new Set(current);
+        next.delete(selected.id);
+        return next;
+      });
+      setSaveState("saved");
+      setSaveMessage("已恢复为 OCR 提取结果。");
+    } catch (reason) {
+      setSaveState("error");
+      setSaveMessage(reason instanceof Error ? reason.message : "恢复失败");
+    }
+  }, [manualEditIds, reloadDataset, selected]);
+
   if (error) {
     return <main className="review-load-screen"><div><b>无法打开复核数据</b><p>{error}</p><a href="/">返回颜色题库</a></div></main>;
   }
@@ -378,12 +678,14 @@ export default function ReactionReviewPage() {
       <header className="review-topbar">
         <div className="review-brand">
           <span className="review-brand-mark">Rx</span>
-          <div><strong>反应式复核台</strong><small>宋天佑《无机化学》OCR 结构化校对</small></div>
+          <div><strong>反应式复核台</strong><small>宋天佑《无机化学》原书扫描页对照复核</small></div>
         </div>
         <div className="review-top-stats" aria-label="复核进度">
-          <span><b>{reviewedCount}</b> / {data.metadata.reactionCount} 已处理</span>
+          <span><b>{reviewedCount}</b> / {data.metadata.reactionCount} 已确认</span>
           <i><em style={{ width: `${reviewedCount / data.metadata.reactionCount * 100}%` }} /></i>
-          <span className="review-verified-count">{verifiedCount} 条确认正确</span>
+          <span className="review-verified-count">
+            {data.metadata.verifiedReviewCount} 条人工确认 · {data.metadata.rejectedReviewCount} 条排除
+          </span>
         </div>
         <nav className="review-nav">
           <a href="/">颜色题库</a>
@@ -457,8 +759,11 @@ export default function ReactionReviewPage() {
 
           <div className="review-dataset-note">
             <b>首轮数据范围</b>
-            <p>{data.metadata.pagesScanned} 页 OCR · {data.metadata.conditionsCount} 项明确条件</p>
-            <span>当前判断保存在本机浏览器；导出后再批量写回正式数据。</span>
+            <p>
+              {data.metadata.pagesScanned} 页原书扫描图 · {data.metadata.conditionsCount} 项明确条件
+              · {data.metadata.electronReactionCount} 条含电子反应
+            </p>
+            <span>{data.metadata.manualEditCount} 条人工修订已写入正式数据；配平通过项自动视为确认。</span>
           </div>
         </aside>
 
@@ -484,7 +789,14 @@ export default function ReactionReviewPage() {
                   <span className="review-list-meta">
                     <b>PDF {reaction.source.pdfPage}</b>
                     <em className={`quality-${quality}`}>{qualityLabel(reaction)}</em>
-                    {decision ? <i className={`decision-${decision.decision}`}>{decisionLabel(decision)}</i> : null}
+                    {reaction.isManualEdit ? <i className="manual-edit-badge">已修改</i> : null}
+                    {reaction.reviewStatus !== "unreviewed"
+                      ? <i className={`decision-${reaction.reviewStatus}`}>
+                          {reaction.reviewStatus === "verified" ? "已合并确认" : "已合并排除"}
+                        </i>
+                      : reaction.balanceStatus === "balanced"
+                        ? <i className="decision-verified">自动确认</i>
+                        : decision ? <i className={`decision-${decision.decision}`}>{decisionLabel(decision)}</i> : null}
                   </span>
                   <ChemEquation canonical={reaction.equationCanonical} raw={reaction.equationRaw} compact />
                   <small>{reaction.source.heading || "教材正文"}</small>
@@ -501,10 +813,11 @@ export default function ReactionReviewPage() {
                 <div>
                   <span className={`review-quality-badge quality-${qualityOf(selected)}`}>{qualityLabel(selected)}</span>
                   <span className="review-kind-badge">{KIND_LABELS[selected.equationKind]}</span>
+                  {selected.isManualEdit ? <span className="review-manual-badge">人工修订数据</span> : null}
                 </div>
                 <div className="review-source-ref">
                   <b>教材第 {selected.source.printedPage || "—"} 页</b>
-                  <small>PDF 第 {selected.source.pdfPage} 页 · OCR 行 {selected.source.lineStart}</small>
+                  <small>原书扫描图 · PDF 第 {selected.source.pdfPage} 页</small>
                 </div>
               </header>
 
@@ -559,22 +872,252 @@ export default function ReactionReviewPage() {
                 </div>
               </section>
 
-              <details className="review-ocr-block">
-                <summary><span>OCR 原始反应式</span><em>点击展开</em></summary>
-                <code>{selected.equationRaw}</code>
-              </details>
-
               <section className="review-evidence">
                 <div className="review-section-title">
-                  <div><span className="review-section-kicker">教材证据</span><h2>{selected.source.heading || "所在段落"}</h2></div>
-                  <code>{selected.source.markdownPath}:{selected.source.lineStart}</code>
+                  <div>
+                    <span className="review-section-kicker">教材原书</span>
+                    <h2>PDF 第 {selected.source.pdfPage} 页{selected.source.printedPage ? ` · 书页 ${selected.source.printedPage}` : ""}</h2>
+                  </div>
+                  <div className="review-image-tools" aria-label="原书图片缩放工具">
+                    <button
+                      type="button"
+                      onClick={() => setImageZoom((value) => Math.max(50, value - 25))}
+                      disabled={imageZoom <= 50}
+                      aria-label="缩小原书图片"
+                    >
+                      −
+                    </button>
+                    <button
+                      type="button"
+                      className="review-zoom-value"
+                      onClick={() => setImageZoom(DEFAULT_IMAGE_ZOOM)}
+                      title="恢复适应宽度"
+                    >
+                      {imageZoom}%
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setImageZoom((value) => Math.min(250, value + 25))}
+                      disabled={imageZoom >= 250}
+                      aria-label="放大原书图片"
+                    >
+                      +
+                    </button>
+                    <a
+                      href={bookPageImageUrl(selected.source.pdfPage)}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      打开原图
+                    </a>
+                  </div>
                 </div>
-                <p>{selected.source.evidenceText}</p>
+                <div className="review-book-page-frame">
+                  <img
+                    src={bookPageImageUrl(selected.source.pdfPage)}
+                    alt={`宋天佑《无机化学》PDF 第 ${selected.source.pdfPage} 页原书扫描图`}
+                    style={{ width: `${imageZoom}%` }}
+                  />
+                </div>
+              </section>
+
+              <section className="review-structure-editor">
+                <div className="review-section-title">
+                  <div>
+                    <span className="review-section-kicker">结构化数据修订</span>
+                    <h2>{selected.isManualEdit ? "已写入人工修订" : "修改方程式"}</h2>
+                  </div>
+                  <button
+                    className="review-editor-toggle"
+                    type="button"
+                    onClick={() => setEditorOpen((current) => !current)}
+                  >
+                    {editorOpen ? "收起编辑器" : "编辑反应数据"}
+                  </button>
+                </div>
+                {editServiceAvailable === false ? (
+                  <p className="review-save-warning">本地保存服务尚未连接。编辑不受影响，连接后即可写入数据。</p>
+                ) : null}
+                {editorOpen && draft ? (
+                  <div className="review-editor-body">
+                    <div className="review-editor-preview">
+                      <div>
+                        <span className="review-section-kicker">修改预览</span>
+                        <ChemEquation
+                          canonical={equationFromDraft(draft)}
+                          raw={equationFromDraft(draft) || "请补全反应物和产物"}
+                        />
+                      </div>
+                      <label>
+                        <span>反应方向</span>
+                        <select
+                          value={draft.direction}
+                          onChange={(event) => {
+                            setDraft((current) => current ? { ...current, direction: event.target.value } : current);
+                            setSaveState("idle");
+                          }}
+                        >
+                          <option value="irreversible">不可逆 →</option>
+                          <option value="reversible">可逆 ⇌</option>
+                          <option value="equilibrium">平衡 ⇌</option>
+                        </select>
+                      </label>
+                    </div>
+
+                    <div className="review-editor-sides">
+                      {(["reactant", "product"] as const).map((side) => (
+                        <fieldset key={side}>
+                          <legend>{side === "reactant" ? "反应物" : "产物"}</legend>
+                          {draft.participants.filter((item) => item.side === side).map((participant) => (
+                            <div className="review-editor-participant" key={participant.clientId}>
+                              <label className="coefficient-field">
+                                <span>系数</span>
+                                <input
+                                  type="number"
+                                  min="1"
+                                  value={participant.coefficientNum}
+                                  onChange={(event) => updateDraftParticipant(participant.clientId, {
+                                    coefficientNum: Math.max(1, Number(event.target.value) || 1),
+                                  })}
+                                />
+                              </label>
+                              <label className="formula-field">
+                                <span>化学式</span>
+                                <input
+                                  value={participant.formulaCanonical}
+                                  onChange={(event) => updateDraftParticipant(participant.clientId, {
+                                    formulaCanonical: event.target.value,
+                                  })}
+                                  placeholder="例如 H2O、Fe^3+、e^-"
+                                />
+                              </label>
+                              <label>
+                                <span>物态</span>
+                                <select
+                                  value={participant.phase || ""}
+                                  onChange={(event) => updateDraftParticipant(participant.clientId, {
+                                    phase: (event.target.value || null) as Participant["phase"],
+                                  })}
+                                >
+                                  <option value="">未标</option>
+                                  <option value="s">(s) 固态</option>
+                                  <option value="l">(l) 液态</option>
+                                  <option value="g">(g) 气态</option>
+                                  <option value="aq">(aq) 水溶液</option>
+                                </select>
+                              </label>
+                              <label>
+                                <span>生成标记</span>
+                                <select
+                                  value={participant.formationMarker || ""}
+                                  onChange={(event) => updateDraftParticipant(participant.clientId, {
+                                    formationMarker: (event.target.value || null) as Participant["formationMarker"],
+                                  })}
+                                >
+                                  <option value="">无</option>
+                                  <option value="gas_release">↑ 气体</option>
+                                  <option value="precipitate">↓ 沉淀</option>
+                                </select>
+                              </label>
+                              <button
+                                type="button"
+                                className="review-editor-remove"
+                                onClick={() => removeDraftParticipant(participant.clientId)}
+                                aria-label={`删除${side === "reactant" ? "反应物" : "产物"} ${participant.formulaCanonical}`}
+                              >
+                                删除
+                              </button>
+                            </div>
+                          ))}
+                          <button
+                            type="button"
+                            className="review-editor-add"
+                            onClick={() => addDraftParticipant(side)}
+                          >
+                            + 添加{side === "reactant" ? "反应物" : "产物"}
+                          </button>
+                        </fieldset>
+                      ))}
+                    </div>
+
+                    <fieldset className="review-editor-conditions">
+                      <legend>反应条件</legend>
+                      {draft.conditions.map((condition) => (
+                        <div key={condition.clientId}>
+                          <select
+                            value={condition.type}
+                            onChange={(event) => updateDraftCondition(condition.clientId, { type: event.target.value })}
+                            aria-label="条件类型"
+                          >
+                            {Object.entries(CONDITION_LABELS).map(([value, label]) => (
+                              <option value={value} key={value}>{label}</option>
+                            ))}
+                          </select>
+                          <input
+                            value={condition.rawText}
+                            onChange={(event) => updateDraftCondition(condition.clientId, { rawText: event.target.value })}
+                            placeholder="条件内容，例如 75 ℃、浓硫酸、光照"
+                            aria-label="条件内容"
+                          />
+                          <input
+                            value={condition.relatedFormula}
+                            onChange={(event) => updateDraftCondition(condition.clientId, { relatedFormula: event.target.value })}
+                            placeholder="关联物质（可选）"
+                            aria-label="条件关联物质"
+                          />
+                          <button
+                            type="button"
+                            className="review-editor-remove"
+                            onClick={() => removeDraftCondition(condition.clientId)}
+                          >
+                            删除
+                          </button>
+                        </div>
+                      ))}
+                      <button type="button" className="review-editor-add" onClick={addDraftCondition}>+ 添加条件</button>
+                    </fieldset>
+
+                    <div className="review-editor-savebar">
+                      <div>
+                        <button
+                          type="button"
+                          className="review-save-data"
+                          onClick={saveDraft}
+                          disabled={saveState === "saving"}
+                        >
+                          {saveState === "saving" ? "正在保存……" : "保存并重新校验"}
+                        </button>
+                        {manualEditIds.has(selected.id) ? (
+                          <button
+                            type="button"
+                            className="review-restore-data"
+                            onClick={removeManualEdit}
+                            disabled={saveState === "saving"}
+                          >
+                            恢复 OCR 结果
+                          </button>
+                        ) : null}
+                      </div>
+                      {saveMessage ? <p className={`save-${saveState}`}>{saveMessage}</p> : null}
+                    </div>
+                  </div>
+                ) : null}
               </section>
 
               <section className="review-decision-panel">
                 <div className="review-section-title">
-                  <div><span className="review-section-kicker">人工复核</span><h2>{decisionLabel(selectedReview)}</h2></div>
+                  <div>
+                    <span className="review-section-kicker">人工复核</span>
+                    <h2>
+                      {selected.reviewStatus === "verified"
+                        ? "已合并确认"
+                        : selected.reviewStatus === "rejected"
+                          ? "已合并排除"
+                          : selected.balanceStatus === "balanced" && !selectedReview
+                            ? "配平通过 · 自动确认"
+                            : decisionLabel(selectedReview)}
+                    </h2>
+                  </div>
                   {selectedReview ? <button className="review-clear" onClick={clearDecision}>清除判断</button> : null}
                 </div>
                 <div className="review-decision-actions">
@@ -582,19 +1125,6 @@ export default function ReactionReviewPage() {
                   <button className={selectedReview?.decision === "needs_correction" ? "active correction" : "correction"} onClick={() => updateDecision("needs_correction")}>需要修订</button>
                   <button className={selectedReview?.decision === "rejected" ? "active rejected" : "rejected"} onClick={() => updateDecision("rejected")}>排除记录</button>
                 </div>
-                {selectedReview?.decision === "needs_correction" ? (
-                  <label className="review-correction-editor">
-                    <span>修订后的规范方程式</span>
-                    <input
-                      value={selectedReview.correctedEquation || ""}
-                      onChange={(event) => updateReviewField("correctedEquation", event.target.value)}
-                      placeholder="例如：2H2 + O2 -> 2H2O"
-                    />
-                    {selectedReview.correctedEquation ? (
-                      <div><ChemEquation canonical={selectedReview.correctedEquation} raw={selectedReview.correctedEquation} /></div>
-                    ) : null}
-                  </label>
-                ) : null}
                 {selectedReview ? (
                   <label className="review-note-editor">
                     <span>复核备注</span>

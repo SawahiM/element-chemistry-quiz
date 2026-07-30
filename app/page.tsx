@@ -7,6 +7,7 @@ import ReactMarkdown from "react-markdown";
 import rehypeKatex from "rehype-katex";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
+import EquationQuiz from "./equation-quiz";
 import { forbiddenColorPair, takeWithFinalColorCheck } from "./question-policy";
 
 type Source = {
@@ -824,7 +825,7 @@ function formatDuration(totalSeconds: number): string {
   return `${String(Math.floor(seconds / 60)).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`;
 }
 
-export default function Home() {
+function ColorQuiz({ onSwitchToEquations }: { onSwitchToEquations: () => void }) {
   const [data, setData] = useState<Materials | null>(null);
   const [formatLanguage, setFormatLanguage] = useState<FormatLanguage | null>(null);
   const [format, setFormat] = useState<GeneratedQuestion["format"]>("color_of");
@@ -1429,6 +1430,10 @@ export default function Home() {
           <div><strong>元素化学 · 色谱</strong><small>宋天佑《无机化学》颜色性质训练</small></div>
         </div>
         <div className="topbar-actions">
+          <div className="quiz-switch" aria-label="题库切换">
+            <button className="active">颜色 Quiz</button>
+            <button onClick={onSwitchToEquations}>方程式 Quiz</button>
+          </div>
           <a className="topbar-button topbar-link" href="/review">反应式复核</a>
           {appMode === "exam_running" ? (
             <div className={remainingSeconds <= 60 ? "exam-clock urgent" : "exam-clock"}>
@@ -1791,4 +1796,11 @@ export default function Home() {
       <footer><span>题目规则 CQF {formatLanguage.version}</span><span>快捷键：1–6 选择，←/→ 上一题/下一题，Enter 确认或继续</span><span>仅使用高置信度教材记录</span></footer>
     </main>
   );
+}
+
+export default function Home() {
+  const [quizBank, setQuizBank] = useState<"color" | "equation">("color");
+  return quizBank === "color"
+    ? <ColorQuiz onSwitchToEquations={() => setQuizBank("equation")} />
+    : <EquationQuiz onSwitchToColors={() => setQuizBank("color")} />;
 }

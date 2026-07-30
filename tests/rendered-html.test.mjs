@@ -49,10 +49,22 @@ test("reaction review dataset and interface cover the full extraction", async ()
   );
   assert.equal(payload.metadata.pagesScanned, 496);
   assert.equal(payload.metadata.reactionCount, payload.reactions.length);
+  assert.equal(payload.metadata.electronReactionCount, 83);
+  assert.equal(payload.metadata.electronParticipantCount, 83);
+  assert.equal(payload.metadata.manualEditCount, 31);
+  assert.equal(payload.metadata.verifiedReviewCount, 38);
+  assert.equal(payload.metadata.rejectedReviewCount, 70);
   assert.ok(payload.reactions.length >= 1200);
   assert.ok(payload.reactions.every((reaction) => reaction.source?.pdfPage && reaction.source?.evidenceText));
   assert.ok(payload.reactions.some((reaction) => reaction.equationCanonical === "3NO2 + H2O -> 2HNO3 + NO"));
   assert.ok(payload.reactions.some((reaction) => reaction.conditions.some((condition) => condition.normalizedValue === "fusion")));
+  const electronReactions = payload.reactions.filter((reaction) => (
+    reaction.participants.some((participant) => /^e\^-(?:\([^()]+\))?$/.test(participant.formulaCanonical || ""))
+  ));
+  assert.equal(electronReactions.length, 83);
+  assert.ok(electronReactions.every((reaction) => reaction.equationKind === "half_reaction"));
+  assert.equal(payload.reactions.filter((reaction) => reaction.reviewStatus === "verified").length, 38);
+  assert.equal(payload.reactions.filter((reaction) => reaction.reviewStatus === "rejected").length, 70);
 
   const reviewPage = await readFile(new URL("../app/review/page.tsx", import.meta.url), "utf8");
   assert.match(reviewPage, /ElementChemistryReactionReview/);
@@ -63,6 +75,18 @@ test("reaction review dataset and interface cover the full extraction", async ()
   assert.match(reviewPage, /导出复核结果/);
   assert.match(reviewPage, /splitEquation/);
   assert.match(reviewPage, /ChemicalTerm/);
+  assert.match(reviewPage, /bookPageImageUrl/);
+  assert.match(reviewPage, /原书扫描图/);
+  assert.match(reviewPage, /打开原图/);
+  assert.match(reviewPage, /setImageZoom/);
+  assert.doesNotMatch(reviewPage, /selected\.source\.evidenceText/);
+  assert.match(reviewPage, /编辑反应数据/);
+  assert.match(reviewPage, /addDraftParticipant/);
+  assert.match(reviewPage, /addDraftCondition/);
+  assert.match(reviewPage, /保存并重新校验/);
+  assert.match(reviewPage, /http:\/\/localhost:3101/);
+  assert.match(reviewPage, /method: "PUT"/);
+  assert.match(reviewPage, /恢复 OCR 结果/);
 });
 
 test("bundled dataset stores appendix ranges as multiple accepted colors", async () => {

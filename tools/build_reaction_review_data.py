@@ -25,6 +25,12 @@ def main() -> None:
             "uncheckableCount": summary["uncheckable_reactions"],
             "conditionsCount": summary["conditions_extracted"],
             "pagesScanned": summary["ocr_pages_scanned"],
+            "electronReactionCount": summary["electron_reactions"],
+            "electronParticipantCount": summary["electron_participants"],
+            "manualEditCount": summary.get("manual_edits_applied", 0),
+            "verifiedReviewCount": summary.get("verified_review_reactions", 0),
+            "rejectedReviewCount": summary.get("rejected_review_reactions", 0),
+            "unreviewedCount": summary.get("unreviewed_reactions", summary["reaction_candidates"]),
         },
         "reactions": [
             {
@@ -37,6 +43,9 @@ def main() -> None:
                 "parseStatus": row["parse_status"],
                 "isExercise": row["is_exercise"],
                 "uncertaintyFlags": row["uncertainty_flags"],
+                "isManualEdit": bool(row.get("manual_edit")),
+                "manualEditUpdatedAt": row.get("manual_edit_updated_at"),
+                "reviewStatus": row["review_status"],
                 "participants": [
                     {
                         "side": item["side"],
@@ -87,4 +96,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
