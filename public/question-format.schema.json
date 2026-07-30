@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://local.element-chemistry.invalid/question-format.schema.json",
+  "title": "ChemQuizFormat",
+  "type": "object",
+  "required": ["language", "version", "formats"],
+  "properties": {
+    "language": { "const": "ChemQuizFormat" },
+    "version": { "type": "string" },
+    "formats": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "label", "questionType", "generator", "source", "prompt", "choices"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
+          "label": { "type": "string" },
+          "questionType": { "enum": ["single_choice", "multiple_choice"] },
+          "generator": { "enum": ["observation_to_color", "color_to_one_substance", "color_to_substances"] },
+          "source": { "type": "object" },
+          "prompt": { "type": "array" },
+          "choices": { "type": "object" },
+          "reveal": { "type": "array", "items": { "type": "string" } }
+        },
+        "additionalProperties": true
+      }
+    }
+  }
+}

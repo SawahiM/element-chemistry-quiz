@@ -1,0 +1,90 @@
+{
+  "language": "ChemQuizFormat",
+  "version": "1.4",
+  "description": "题目格式只描述如何从物质观察数据库现场取样，不保存具体题目。",
+  "formats": [
+    {
+      "id": "color_of",
+      "label": "物质 → 颜色",
+      "questionType": "single_choice",
+      "generator": "observation_to_color",
+      "source": {
+        "collection": "observations",
+        "where": { "colorQuestionEligible": true }
+      },
+      "prompt": [
+        { "token": "substance_with_qualifier" },
+        { "text": "是什么颜色？" }
+      ],
+      "choices": {
+        "count": 4,
+        "answer": "acceptedColorIds",
+        "distractors": {
+          "strategy": "same_context_weighted",
+          "preferSame": ["focusElement", "observationKind", "physicalState"],
+          "focusElementProbability": 0.8,
+          "focusElementMaxChoices": 2,
+          "excludeCorrectForSubstance": true,
+          "forbidColorPairs": [["白色", "无色"]]
+        }
+      },
+      "reveal": ["answer", "evidence", "source_button"]
+    },
+    {
+      "id": "which_one_is_color",
+      "label": "颜色 → 单一物质",
+      "questionType": "single_choice",
+      "generator": "color_to_one_substance",
+      "source": {
+        "collection": "observations",
+        "where": { "selectionQuestionEligible": true }
+      },
+      "prompt": [
+        { "text": "下列物质中，呈" },
+        { "token": "target_color" },
+        { "text": "的是哪一种？" }
+      ],
+      "choices": {
+        "count": 4,
+        "answer": "substanceId",
+        "distractors": {
+          "strategy": "same_context_other_colors",
+          "preferSame": ["focusElement", "observationKind", "physicalState"],
+          "focusElementProbability": 0.8,
+          "focusElementMaxChoices": 2,
+          "excludeAnyCorrectForTargetColor": true,
+          "forbidColorPairs": [["白色", "无色"]]
+        }
+      },
+      "reveal": ["answer", "evidence", "source_button"]
+    },
+    {
+      "id": "which_are_color",
+      "label": "颜色 → 物质",
+      "questionType": "multiple_choice",
+      "generator": "color_to_substances",
+      "source": {
+        "collection": "observations",
+        "where": { "selectionQuestionEligible": true }
+      },
+      "prompt": [
+        { "text": "下列物质中，呈" },
+        { "token": "target_color" },
+        { "text": "的有哪些？" }
+      ],
+      "choices": {
+        "count": 6,
+        "correctCount": { "min": 2, "max": 3 },
+        "distractors": {
+          "strategy": "same_context_other_colors",
+          "preferSame": ["focusElement", "observationKind"],
+          "focusElementProbability": 0.8,
+          "focusElementMaxChoices": 2,
+          "excludeAnyCorrectForTargetColor": true,
+          "forbidColorPairs": [["白色", "无色"]]
+        }
+      },
+      "reveal": ["answers", "evidence", "source_buttons"]
+    }
+  ]
+}
