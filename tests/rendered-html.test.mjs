@@ -9,7 +9,7 @@ async function render(pathname = "/") {
 
   return worker.fetch(
     new Request(`http://localhost${pathname}`, {
-      headers: { accept: "text/html" },
+      headers: { accept: "text/html", ...(pathname === "/" ? {} : { cookie: "quiz_session=test-session" }) },
     }),
     {
       ASSETS: {
@@ -23,72 +23,25 @@ async function render(pathname = "/") {
   );
 }
 
-test("server-renders the chemistry quiz loading shell", async () => {
+test("server-renders the credential-check shell before the chemistry quiz", async () => {
   const response = await render();
   assert.equal(response.status, 200);
   assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
 
   const html = await response.text();
   assert.match(html, /<html lang="zh-CN">/i);
-  assert.match(html, /<title>元素化学<\/title>/i);
-  assert.match(html, /正在整理物质与颜色关系/);
+  assert.match(html, /<title>无机化学基础知识练习<\/title>/i);
+  assert.match(html, /正在验证访问凭据/);
+  assert.doesNotMatch(html, /正在整理物质与颜色关系/);
   assert.doesNotMatch(html, /codex-preview|Starter Project|Building your site/i);
 });
 
-test("server-renders the reaction review route", async () => {
-  const response = await render("/review");
+test("server-renders the protected account history route", async () => {
+  const response = await render("/history");
   assert.equal(response.status, 200);
   const html = await response.text();
-  assert.match(html, /<title>反应式复核台 · 元素化学<\/title>/i);
-  assert.match(html, /正在整理反应方程式/);
-});
-
-test("reaction review dataset and interface cover the full extraction", async () => {
-  const payload = JSON.parse(
-    await readFile(new URL("../public/reactions.review.v1.json", import.meta.url), "utf8"),
-  );
-  assert.equal(payload.metadata.pagesScanned, 496);
-  assert.equal(payload.metadata.reactionCount, payload.reactions.length);
-  assert.equal(payload.metadata.electronReactionCount, 83);
-  assert.equal(payload.metadata.electronParticipantCount, 83);
-  assert.equal(payload.metadata.manualEditCount, 31);
-  assert.equal(payload.metadata.verifiedReviewCount, 38);
-  assert.equal(payload.metadata.rejectedReviewCount, 70);
-  assert.ok(payload.reactions.length >= 1200);
-  assert.ok(payload.reactions.every((reaction) => reaction.source?.pdfPage && reaction.source?.evidenceText));
-  assert.ok(payload.reactions.some((reaction) => reaction.equationCanonical === "3NO2 + H2O -> 2HNO3 + NO"));
-  assert.ok(payload.reactions.some((reaction) => reaction.conditions.some((condition) => condition.normalizedValue === "fusion")));
-  const electronReactions = payload.reactions.filter((reaction) => (
-    reaction.participants.some((participant) => /^e\^-(?:\([^()]+\))?$/.test(participant.formulaCanonical || ""))
-  ));
-  assert.equal(electronReactions.length, 83);
-  assert.ok(electronReactions.every((reaction) => reaction.equationKind === "half_reaction"));
-  assert.equal(payload.reactions.filter((reaction) => reaction.reviewStatus === "verified").length, 38);
-  assert.equal(payload.reactions.filter((reaction) => reaction.reviewStatus === "rejected").length, 70);
-
-  const reviewPage = await readFile(new URL("../app/review/page.tsx", import.meta.url), "utf8");
-  assert.match(reviewPage, /ElementChemistryReactionReview/);
-  assert.match(reviewPage, /localStorage\.setItem/);
-  assert.match(reviewPage, /确认正确/);
-  assert.match(reviewPage, /需要修订/);
-  assert.match(reviewPage, /排除记录/);
-  assert.match(reviewPage, /导出复核结果/);
-  assert.match(reviewPage, /splitEquation/);
-  assert.match(reviewPage, /ChemicalTerm/);
-  assert.match(reviewPage, /pageImageUrl/);
-  assert.match(reviewPage, /\/page-images\/pdf_/);
-  assert.doesNotMatch(reviewPage, /\/book-pages\/pdf_/);
-  assert.match(reviewPage, /原书扫描图/);
-  assert.match(reviewPage, /打开原图/);
-  assert.match(reviewPage, /setImageZoom/);
-  assert.doesNotMatch(reviewPage, /selected\.source\.evidenceText/);
-  assert.match(reviewPage, /编辑反应数据/);
-  assert.match(reviewPage, /addDraftParticipant/);
-  assert.match(reviewPage, /addDraftCondition/);
-  assert.match(reviewPage, /保存并重新校验/);
-  assert.match(reviewPage, /http:\/\/localhost:3101/);
-  assert.match(reviewPage, /method: "PUT"/);
-  assert.match(reviewPage, /恢复 OCR 结果/);
+  assert.match(html, /<title>历史记录 · 元素化学<\/title>/i);
+  assert.match(html, /正在验证访问凭据/);
 });
 
 test("bundled dataset stores appendix ranges as multiple accepted colors", async () => {
@@ -105,6 +58,7 @@ test("bundled dataset stores appendix ranges as multiple accepted colors", async
 
 test("quiz keeps navigable practice and exam histories with post-exam review", async () => {
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  const practiceHeader = await readFile(new URL("../app/practice-header.tsx", import.meta.url), "utf8");
   assert.match(page, /practiceHistory/);
   assert.match(page, /previousQuestion/);
   assert.match(page, /examAnswers/);
@@ -112,10 +66,12 @@ test("quiz keeps navigable practice and exam histories with post-exam review", a
   assert.match(page, /ExamReviewCard/);
   assert.match(page, /所有题目、作答结果与教材依据/);
   assert.match(page, /SESSION_STORAGE_KEY/);
-  assert.match(page, /window\.localStorage\.setItem/);
+  assert.match(page, /saveAccountData/);
+  assert.doesNotMatch(page, /window\.localStorage\.setItem/);
   assert.match(page, /restoreSavedSession/);
-  assert.match(page, /保留并继续/);
-  assert.match(page, /清空并重新开始/);
+  assert.match(page, /pendingRestore\) restoreSavedSession\(\)/);
+  assert.doesNotMatch(page, /是否保留并恢复/);
+  assert.doesNotMatch(page, /清空并重新开始/);
   assert.match(page, /practiceDraft/);
   const createPracticeStart = page.indexOf("const createPracticeQuestion");
   const createPracticeEnd = page.indexOf("const showExamQuestion", createPracticeStart);
@@ -123,7 +79,16 @@ test("quiz keeps navigable practice and exam histories with post-exam review", a
   assert.match(createPracticeBlock, /setPracticeDraft/);
   assert.doesNotMatch(createPracticeBlock, /setPracticeHistory/);
   assert.match(page, /setPracticeHistory\(\(entries\) => \[\.\.\.entries, completed\]\)/);
-  assert.match(page, /storedRecordCount\(parsed\) > 0/);
+  assert.match(page, /loadPracticeHistory\("color"\)/);
+  assert.match(page, /restoreColorPracticeHistory/);
+  assert.doesNotMatch(page, /practiceHistory: practiceHistory\.map/);
+  assert.match(page, /<PracticeHeader>/);
+  assert.match(page, /active="colors"/);
+  assert.match(practiceHeader, /无机化学基础知识练习/);
+  assert.match(practiceHeader, /颜色练习/);
+  assert.match(practiceHeader, /方程式练习/);
+  assert.match(practiceHeader, /试卷模式/);
+  assert.match(practiceHeader, /考试模式/);
   assert.match(page, /correct-missed/);
   assert.match(page, /missed-correct/);
   assert.match(page, /CHAPTER_ELEMENT_GROUPS/);
@@ -136,4 +101,46 @@ test("quiz keeps navigable practice and exam histories with post-exam review", a
   assert.match(page, /label: "氢"/);
   assert.match(page, /label: "稀有气体"/);
   assert.match(page, /const ALLOWED_ELEMENTS = ALL_ELEMENT_SYMBOLS/);
+});
+
+test("account history supports exams, compact practice, wrong answers, and deletion", async () => {
+  const historyPage = await readFile(new URL("../app/history/page.tsx", import.meta.url), "utf8");
+  const historyCss = await readFile(new URL("../app/history/history.css", import.meta.url), "utf8");
+  const historyStorage = await readFile(new URL("../app/history-storage.ts", import.meta.url), "utf8");
+  const authGate = await readFile(new URL("../app/auth-gate.tsx", import.meta.url), "utf8");
+  const colorQuiz = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  const equationQuiz = await readFile(new URL("../app/equation-quiz.tsx", import.meta.url), "utf8");
+  const api = await readFile(new URL("../worker/auth-api.ts", import.meta.url), "utf8");
+  assert.match(authGate, /href="\/history"/);
+  assert.match(historyPage, /考试记录/);
+  assert.match(historyPage, /做题记录/);
+  assert.match(historyPage, /错题整理/);
+  assert.match(historyPage, /history-prompt-box/);
+  assert.match(historyPage, /equationReactants/);
+  assert.match(historyPage, /ReactMarkdown/);
+  assert.match(historyPage, /remarkMath/);
+  assert.match(historyPage, /StandardEquation/);
+  assert.match(historyPage, /displayMode: display/);
+  assert.match(historyPage, /deleteHistoryRecord/);
+  assert.match(historyPage, /window\.confirm/);
+  assert.match(historyPage, /clearHistory/);
+  assert.doesNotMatch(historyPage, /neutral=\{tab === "wrong"\}/);
+  assert.match(historyCss, /history-question-grid/);
+  assert.match(historyCss, /min-width: 128px/);
+  assert.match(historyCss, /width: max-content/);
+  assert.match(historyCss, /is-correct \.history-prompt-box/);
+  assert.match(historyCss, /is-wrong \.history-prompt-box/);
+  assert.match(historyCss, /history-answer-grid p > span:first-child/);
+  assert.doesNotMatch(historyCss, /history-answer-grid p span \{/);
+  assert.match(historyStorage, /\/api\/history\?all=true/);
+  assert.match(colorQuiz, /color-practice-/);
+  assert.match(colorQuiz, /color-exam-/);
+  assert.match(equationQuiz, /equation-practice-/);
+  assert.match(equationQuiz, /equation-exam-/);
+  assert.match(equationQuiz, /loadPracticeHistory\("equation"\)/);
+  assert.match(equationQuiz, /restoreEquationPracticeHistory/);
+  assert.match(equationQuiz, /<PracticeHeader>/);
+  assert.match(equationQuiz, /active="equations"/);
+  assert.match(api, /DELETE FROM history_records WHERE id = \? AND user_id = \?/);
+  assert.match(api, /DELETE FROM history_records WHERE user_id = \?/);
 });

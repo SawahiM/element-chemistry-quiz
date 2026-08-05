@@ -5,6 +5,9 @@ import katex from "katex";
 import "katex/contrib/mhchem";
 import { coefficientIsExact, equationAnswerIsExact, formulaElements } from "./equation-policy";
 import { publicPath } from "./public-path";
+import { PracticeHeader, PracticeNavigation } from "./practice-header";
+import { loadAccountData, saveAccountData } from "./account-storage";
+import { appendHistory, loadPracticeHistory, type HistoryRecord } from "./history-storage";
 
 type Participant = {
   side: "reactant" | "product";
@@ -24,7 +27,7 @@ type Reaction = {
   direction: string;
   balanceStatus: string;
   parseStatus: string;
-  reviewStatus: string;
+  eligibleForQuiz: boolean;
   isExercise: boolean;
   participants: Participant[];
   conditions: ReactionCondition[];
@@ -50,8 +53,20 @@ type EquationResponse = {
   answerCoefficients: string[];
 };
 type ActiveField = { kind: keyof EquationResponse; index: number };
-type AnswerRecord = { question: EquationQuestion; response: EquationResponse; correct: boolean };
+type AnswerRecord = { question: EquationQuestion; response: EquationResponse; correct: boolean; requireBalancing: boolean; fixedCount: boolean };
 type ExamConfig = { durationMinutes: number; totalPoints: number; forward: number; reverse: number };
+type StoredEquationSession = {
+  version?: number;
+  question?: { id?: string; reactionId?: string; direction?: string };
+  response?: EquationResponse;
+  submitted?: boolean;
+  direction?: Direction;
+  requireBalancing?: boolean;
+  fixedCount?: boolean;
+  scope?: string[];
+  stats?: { answered: number; correct: number; streak: number };
+  examConfig?: ExamConfig;
+};
 
 const SESSION_KEY = "element-chemistry-equation-quiz-v1";
 const ELEMENTS = [
@@ -120,7 +135,7 @@ function validReactions(data: ReactionDataset, scope: Set<string>): Reaction[] {
   return data.reactions.filter((reaction) => {
     const reactants = reaction.participants.filter((part) => part.side === "reactant");
     const products = reaction.participants.filter((part) => part.side === "product");
-    return reaction.reviewStatus !== "rejected"
+    return reaction.eligibleForQuiz
       && reaction.parseStatus === "parsed"
       && !reaction.isExercise
       && reactants.length > 0
@@ -128,6 +143,40 @@ function validReactions(data: ReactionDataset, scope: Set<string>): Reaction[] {
       && reaction.participants.every((part) => part.parseStatus === "parsed")
       && reactionElements(reaction).some((element) => scope.has(element));
   });
+}
+
+function restoreEquationPracticeHistory(records: HistoryRecord[], data: ReactionDataset): AnswerRecord[] {
+  const reactionMap = new Map(data.reactions.map((reaction) => [reaction.id, reaction]));
+  return records.map((record) => {
+    const payload = record.payload as {
+      question?: { id?: string; direction?: Direction; reaction?: { id?: string } };
+      response?: EquationResponse;
+      requireBalancing?: boolean;
+      fixedCount?: boolean;
+    };
+    const reaction = payload.question?.reaction?.id ? reactionMap.get(payload.question.reaction.id) : undefined;
+    const response = payload.response;
+    if (!reaction || !payload.question?.id || !response || !Array.isArray(response.formulas) || !Array.isArray(response.knownCoefficients) || !Array.isArray(response.answerCoefficients)) return null;
+    return {
+      question: { id: payload.question.id, reaction, direction: payload.question.direction === "reverse" ? "reverse" : "forward" },
+      response: {
+        formulas: [...response.formulas],
+        knownCoefficients: [...response.knownCoefficients],
+        answerCoefficients: [...response.answerCoefficients],
+      },
+      correct: record.correct === true,
+      requireBalancing: payload.requireBalancing !== false,
+      fixedCount: payload.fixedCount !== false,
+    };
+  }).filter((entry): entry is AnswerRecord => entry !== null);
+}
+
+function equationPracticeStats(entries: AnswerRecord[]) {
+  return entries.reduce((stats, entry) => ({
+    answered: stats.answered + 1,
+    correct: stats.correct + Number(entry.correct),
+    streak: entry.correct ? stats.streak + 1 : 0,
+  }), { answered: 0, correct: 0, streak: 0 });
 }
 
 function questionFor(reactions: Reaction[], direction: Direction, previousId?: string): EquationQuestion {
@@ -304,9 +353,10 @@ export default function EquationQuiz({ onSwitchToColors, onSwitchToPaper }: { on
   const [examStartedAt, setExamStartedAt] = useState<number | null>(null);
   const [remainingSeconds, setRemainingSeconds] = useState(0);
   const restored = useRef(false);
+  const savedExamStartRef = useRef<number | null>(null);
 
   useEffect(() => {
-    fetch(publicPath("/reactions.review.v1.json"))
+    fetch(publicPath("/reactions.quiz.v1.json"))
       .then((response) => {
         if (!response.ok) throw new Error("方程式题库载入失败");
         return response.json() as Promise<ReactionDataset>;
@@ -331,20 +381,41 @@ export default function EquationQuiz({ onSwitchToColors, onSwitchToPaper }: { on
   useEffect(() => {
     if (!data || question || restored.current) return;
     restored.current = true;
-    const timer = window.setTimeout(() => {
+    const timer = window.setTimeout(async () => {
       try {
-        const stored = JSON.parse(window.localStorage.getItem(SESSION_KEY) || "null");
+        const [stored, historyRecords] = await Promise.all([
+          loadAccountData<StoredEquationSession>(SESSION_KEY),
+          loadPracticeHistory("equation"),
+        ]);
+        const restoredHistory = restoreEquationPracticeHistory(historyRecords, data);
+        setHistory(restoredHistory);
+        setStats(equationPracticeStats(restoredHistory));
         const reactionMap = new Map(data.reactions.map((reaction) => [reaction.id, reaction]));
-      if (stored?.version === 2 && stored.question?.reactionId) {
+        if ((stored?.version === 2 || stored?.version === 3) && stored.question?.reactionId) {
+          const submittedIndex = stored.submitted && stored.question.id
+            ? restoredHistory.findIndex((record) => record.question.id === stored.question?.id)
+            : -1;
+          if (submittedIndex >= 0) {
+            const record = restoredHistory[submittedIndex];
+            setDirection(record.question.direction);
+            setRequireBalancing(record.requireBalancing);
+            setFixedCount(record.fixedCount);
+            setQuestion(record.question);
+            setResponse(record.response);
+            setSubmitted(true);
+            setHistoryIndex(submittedIndex);
+            setExamConfig(stored.examConfig || examConfig);
+            return;
+          }
           const restoredReaction = reactionMap.get(stored.question.reactionId);
-          if (restoredReaction) {
+          if (restoredReaction && !stored.submitted) {
             const restoredDirection: Direction = stored.question.direction === "reverse" ? "reverse" : "forward";
             const restoredScope = new Set<string>((stored.scope || ELEMENTS).filter((item: string) => ELEMENTS.includes(item)));
             setDirection(restoredDirection);
             setRequireBalancing(stored.requireBalancing !== false);
             setFixedCount(stored.fixedCount !== false);
             setScope(restoredScope.size ? restoredScope : new Set(ELEMENTS));
-            setQuestion({ id: `restored-${restoredDirection}-${restoredReaction.id}`, reaction: restoredReaction, direction: restoredDirection });
+            setQuestion({ id: stored.question.id || `restored-${restoredDirection}-${restoredReaction.id}`, reaction: restoredReaction, direction: restoredDirection });
             const restoredResponse = stored.response;
             setResponse(
               restoredResponse
@@ -354,39 +425,40 @@ export default function EquationQuiz({ onSwitchToColors, onSwitchToPaper }: { on
                 ? restoredResponse
                 : blankResponse({ id: "restore", reaction: restoredReaction, direction: restoredDirection }, stored.fixedCount !== false),
             );
-            setStats(stored.stats || { answered: 0, correct: 0, streak: 0 });
+            setHistoryIndex(restoredHistory.length);
+            setSubmitted(false);
             setExamConfig(stored.examConfig || examConfig);
             return;
           }
         }
-      } catch {
-        window.localStorage.removeItem(SESSION_KEY);
-      }
+      } catch { /* Start a clean equation session when no valid server record exists. */ }
       const reactions = validReactions(data, new Set(ELEMENTS));
       const first = questionFor(reactions, "forward");
       setQuestion(first);
       setResponse(blankResponse(first, true));
+      setSubmitted(false);
     }, 0);
     return () => window.clearTimeout(timer);
   }, [data, examConfig, question]);
 
   useEffect(() => {
-    if (!question || !data) return;
+    if (!question || !data || mode !== "practice") return;
     const timer = window.setTimeout(() => {
-      window.localStorage.setItem(SESSION_KEY, JSON.stringify({
-        version: 2,
-        question: { reactionId: question.reaction.id, direction: question.direction },
+      void saveAccountData(SESSION_KEY, {
+        version: 3,
+        question: { id: question.id, reactionId: question.reaction.id, direction: question.direction },
         response,
+        submitted,
         direction,
         requireBalancing,
         fixedCount,
         scope: [...scope],
         stats,
         examConfig,
-      }));
+      });
     }, 150);
     return () => window.clearTimeout(timer);
-  }, [data, direction, examConfig, fixedCount, question, requireBalancing, response, scope, stats]);
+  }, [data, direction, examConfig, fixedCount, mode, question, requireBalancing, response, scope, stats, submitted]);
 
   const updateField = (kind: keyof EquationResponse, index: number, value: string) => {
     setResponse((current) => ({
@@ -463,6 +535,8 @@ export default function EquationQuiz({ onSwitchToColors, onSwitchToPaper }: { on
         answerCoefficients: [...response.answerCoefficients],
       },
       correct,
+      requireBalancing,
+      fixedCount,
     }]);
     setHistoryIndex(history.length);
     setStats((current) => ({
@@ -470,6 +544,21 @@ export default function EquationQuiz({ onSwitchToColors, onSwitchToPaper }: { on
       correct: current.correct + Number(correct),
       streak: correct ? current.streak + 1 : 0,
     }));
+    void appendHistory([{
+      clientKey: `equation-practice-${question.id}`,
+      recordType: "practice",
+      quizKind: "equation",
+      source: "practice",
+      correct,
+      payload: {
+        version: 1,
+        question,
+        response: { formulas: [...response.formulas], knownCoefficients: [...response.knownCoefficients], answerCoefficients: [...response.answerCoefficients] },
+        requireBalancing,
+        fixedCount,
+      },
+      createdAt: Math.floor(Date.now() / 1000),
+    }]);
   };
 
   const showHistory = (index: number) => {
@@ -482,6 +571,8 @@ export default function EquationQuiz({ onSwitchToColors, onSwitchToPaper }: { on
       knownCoefficients: [...record.response.knownCoefficients],
       answerCoefficients: [...record.response.answerCoefficients],
     });
+    setRequireBalancing(record.requireBalancing);
+    setFixedCount(record.fixedCount);
     setHistoryIndex(index);
     setSubmitted(true);
   };
@@ -531,6 +622,7 @@ export default function EquationQuiz({ onSwitchToColors, onSwitchToPaper }: { on
     setResponse(answerRows[0]);
     setSubmitted(false);
     setExamStartedAt(now);
+    savedExamStartRef.current = null;
     setRemainingSeconds(examConfig.durationMinutes * 60);
     setMode("exam_running");
   };
@@ -551,8 +643,36 @@ export default function EquationQuiz({ onSwitchToColors, onSwitchToPaper }: { on
   }, [examQuestions, examResponses, fixedCount]);
 
   const finishExam = useCallback(() => {
+    const endedAt = Date.now();
+    if (examStartedAt !== null && savedExamStartRef.current !== examStartedAt) {
+      savedExamStartRef.current = examStartedAt;
+      const results = examQuestions.map((item, index) => {
+        const answer = examResponses[index] || blankResponse(item, fixedCount);
+        return { question: item, response: answer, correct: exact(item, answer, requireBalancing) };
+      });
+      const createdAt = Math.floor(endedAt / 1000);
+      void appendHistory([
+        {
+          clientKey: `equation-exam-${examStartedAt}`,
+          recordType: "exam",
+          quizKind: "equation",
+          source: "exam",
+          payload: { version: 1, config: examConfig, results, requireBalancing, fixedCount, startedAt: examStartedAt, endedAt },
+          createdAt,
+        },
+        ...results.map((result, index) => ({
+          clientKey: `equation-exam-question-${examStartedAt}-${index}`,
+          recordType: "practice" as const,
+          quizKind: "equation" as const,
+          source: "exam" as const,
+          correct: result.correct,
+          payload: { version: 1, question: result.question, response: result.response, requireBalancing, fixedCount },
+          createdAt,
+        })),
+      ]);
+    }
     setMode("exam_result");
-  }, []);
+  }, [examConfig, examQuestions, examResponses, examStartedAt, fixedCount, requireBalancing]);
 
   useEffect(() => {
     if (mode !== "exam_running" || examStartedAt === null) return;
@@ -594,22 +714,19 @@ export default function EquationQuiz({ onSwitchToColors, onSwitchToPaper }: { on
 
   return (
     <main className="app-shell equation-app">
-      <header className="topbar">
-        <div className="brand">
-          <span className="brand-mark">EC</span>
-          <div><strong>元素化学 · 方程式</strong><small>宋天佑《元素化学》反应方程式训练</small></div>
-        </div>
-        <div className="topbar-actions">
-          <div className="quiz-switch" aria-label="题库切换">
-            <button onClick={onSwitchToColors}>颜色 Quiz</button><button className="active">方程式 Quiz</button>
-            <button onClick={onSwitchToPaper}>试卷模式</button>
-          </div>
+      <PracticeHeader>
+          <PracticeNavigation
+            active="equations"
+            onColors={onSwitchToColors}
+            onPaper={mode === "exam_running" ? undefined : onSwitchToPaper}
+            onExam={() => setMode("exam_setup")}
+            examActive={mode !== "practice"}
+            examDisabled={mode === "exam_running"}
+          />
           {mode === "exam_running"
             ? <div className={remainingSeconds <= 60 ? "exam-clock urgent" : "exam-clock"}><span>考试倒计时</span><b>{Math.floor(remainingSeconds / 60).toString().padStart(2, "0")}:{(remainingSeconds % 60).toString().padStart(2, "0")}</b></div>
-            : <div className="dataset-pill"><span className="live-dot" />现场生成 · {pool.length.toLocaleString()} 条可用反应</div>}
-          {mode === "practice" ? <button className="topbar-button" onClick={() => setMode("exam_setup")}>考试模式</button> : null}
-        </div>
-      </header>
+            : null}
+      </PracticeHeader>
 
       {scopeOpen ? (
         <div className="scope-modal-backdrop" onMouseDown={(event) => { if (event.currentTarget === event.target) setScopeOpen(false); }}>
@@ -655,7 +772,7 @@ export default function EquationQuiz({ onSwitchToColors, onSwitchToPaper }: { on
 
       {mode === "exam_setup" ? (
         <section className="exam-screen equation-exam-screen">
-          <div className="exam-heading"><span className="panel-label">考试设置</span><h1>生成一份方程式试卷</h1><p>正推与逆推按设定数量随机混排；配平、空格数量和元素范围沿用当前设置。</p></div>
+          <div className="exam-heading"><span className="panel-label">考试设置</span><h1>方程式专项考试</h1><p>设置题量、时长与分值，准备好后开始作答。</p></div>
           <div className="exam-config-grid">
             <label className="exam-field"><span>限时（分钟）</span><input type="number" min="1" max="180" value={examConfig.durationMinutes} onChange={(event) => setExamConfig({ ...examConfig, durationMinutes: Math.max(1, Number(event.target.value) || 1) })} /></label>
             <label className="exam-field"><span>试卷总分</span><input type="number" min="10" max="1000" value={examConfig.totalPoints} onChange={(event) => setExamConfig({ ...examConfig, totalPoints: Math.max(10, Number(event.target.value) || 100) })} /></label>
@@ -711,7 +828,6 @@ export default function EquationQuiz({ onSwitchToColors, onSwitchToPaper }: { on
                 </div>
                 <section className="element-scope-control"><div><span>考察元素</span><b>{scopeSummary}</b></div><div className="scope-control-actions"><button onClick={() => { setScopeDraft(new Set(scope)); setScopeOpen(true); }}>章节多选</button><button onClick={() => { setScopeDraft(new Set(scope)); setScopeOpen(true); }}>自定义</button><button onClick={() => { setScope(new Set(ELEMENTS)); setNewQuestion(direction, fixedCount, validReactions(data, new Set(ELEMENTS))); }}>全选</button></div></section>
                 <div className="stats-grid"><div><span>{stats.answered}</span><small>已答</small></div><div><span>{accuracy}%</span><small>正确率</small></div><div><span>{stats.streak}</span><small>连续正确</small></div></div>
-                <div className="database-note"><b>方程式数据库</b><p>{data.metadata.reactionCount.toLocaleString()} 条提取记录</p><p>{pool.length.toLocaleString()} 条当前可出题</p><span>物质顺序不影响判定；相态、沉淀/放气标记和反应箭头不参与答案检测。</span></div>
               </>
             )}
           </aside>
@@ -747,7 +863,6 @@ export default function EquationQuiz({ onSwitchToColors, onSwitchToPaper }: { on
           </aside>
         </section>
       )}
-      <footer><span>方程式题库 {data.metadata.schemaVersion}</span><span>支持键盘输入与触屏元素/数字键盘</span><span>答案来自已校对的教材提取记录</span></footer>
     </main>
   );
 }

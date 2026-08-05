@@ -6,6 +6,7 @@ import "katex/contrib/mhchem";
 import { formulaElements } from "./equation-policy";
 import { ALL_ELEMENTS, elementScopeTitle, ElementScopePicker } from "./element-scope-picker";
 import { publicPath } from "./public-path";
+import { PracticeBrand, PracticeNavigation } from "./practice-header";
 
 type Observation = {
   id: string;
@@ -44,7 +45,7 @@ type ReactionCondition = {
 type Reaction = {
   id: string;
   parseStatus: string;
-  reviewStatus: string;
+  eligibleForQuiz: boolean;
   isExercise: boolean;
   participants: Participant[];
   conditions: ReactionCondition[];
@@ -192,7 +193,7 @@ function usableReactions(data: ReactionDataset, scope: Set<string>): Reaction[] 
   return data.reactions.filter((reaction) => {
     const reactants = reaction.participants.filter((part) => part.side === "reactant");
     const products = reaction.participants.filter((part) => part.side === "product");
-    return reaction.reviewStatus !== "rejected"
+    return reaction.eligibleForQuiz
       && reaction.parseStatus === "parsed"
       && !reaction.isExercise
       && reactants.length > 0
@@ -578,7 +579,7 @@ export default function PaperMode({ onSwitchToColors, onSwitchToEquations }: { o
   const documentTitle = useMemo(() => elementScopeTitle(elementScope), [elementScope]);
 
   useEffect(() => {
-    Promise.all([fetch(publicPath("/materials.v1.json")), fetch(publicPath("/reactions.review.v1.json"))])
+    Promise.all([fetch(publicPath("/materials.v1.json")), fetch(publicPath("/reactions.quiz.v1.json"))])
       .then(async ([materialResponse, reactionResponse]) => {
         if (!materialResponse.ok || !reactionResponse.ok) throw new Error("试卷题库加载失败");
         return [await materialResponse.json(), await reactionResponse.json()] as [Materials, ReactionDataset];
@@ -679,25 +680,26 @@ export default function PaperMode({ onSwitchToColors, onSwitchToEquations }: { o
   return (
     <main className="paper-mode">
       <nav className="paper-toolbar" aria-label="试卷工具栏">
-        <div className="quiz-switch" aria-label="题库切换">
-          <button onClick={onSwitchToColors}>颜色 Quiz</button>
-          <button onClick={onSwitchToEquations}>方程式 Quiz</button>
-          <button className="active">试卷模式</button>
+        <div className="paper-toolbar-primary">
+          <PracticeBrand compact />
+          <PracticeNavigation active="paper" onColors={onSwitchToColors} onEquations={onSwitchToEquations} />
         </div>
-        <div className="paper-counts" aria-label="各题型题数">
-          {([
-            ["colorOf", "颜色判断"], ["whichOne", "物质单选"], ["whichAre", "物质多选"],
-            ["forward", "补全产物"], ["balanced", "补全配平"],
-          ] as Array<[keyof PaperConfig, string]>).map(([key, label]) => (
-            <label key={key}><span>{label}</span><input type="number" min="0" max="50" value={config[key]} onChange={(event) => updateCount(key, Number(event.target.value))} /></label>
-          ))}
+        <div className="paper-toolbar-controls">
+          <div className="paper-counts" aria-label="各题型题数">
+            {([
+              ["colorOf", "颜色判断"], ["whichOne", "物质单选"], ["whichAre", "物质多选"],
+              ["forward", "补全产物"], ["balanced", "补全配平"],
+            ] as Array<[keyof PaperConfig, string]>).map(([key, label]) => (
+              <label key={key}><span>{label}</span><input type="number" min="0" max="50" value={config[key]} onChange={(event) => updateCount(key, Number(event.target.value))} /></label>
+            ))}
+          </div>
+          <ElementScopePicker scope={elementScope} onApply={applyElementScope} error={scopeError} />
+          <span>共 {totalQuestions} 题 · {pages.length} 页 A4</span>
+          {generationNotice ? <span className="paper-generation-note">{generationNotice}</span> : null}
+          <button onClick={regenerate}>更新试卷</button>
+          <button className={showAnswers ? "paper-answer-toggle active" : "paper-answer-toggle"} onClick={() => setShowAnswers((current) => !current)}>{showAnswers ? "隐藏参考答案" : "显示参考答案"}</button>
+          <button className="paper-print-button" onClick={() => window.print()}>打印试卷</button>
         </div>
-        <ElementScopePicker scope={elementScope} onApply={applyElementScope} error={scopeError} />
-        <span>共 {totalQuestions} 题 · {pages.length} 页 A4</span>
-        {generationNotice ? <span className="paper-generation-note">{generationNotice}</span> : null}
-        <button onClick={regenerate}>应用题数并重新生成</button>
-        <button className={showAnswers ? "paper-answer-toggle active" : "paper-answer-toggle"} onClick={() => setShowAnswers((current) => !current)}>{showAnswers ? "隐藏参考答案" : "显示参考答案"}</button>
-        <button className="paper-print-button" onClick={() => window.print()}>打印试卷</button>
       </nav>
       <div className="paper-measure-body" ref={measureRef} aria-hidden="true">
         {blocks.map((block, blockIndex) => <PaperBlockView block={block} title={documentTitle} key={`measure-${blockIndex}`} />)}

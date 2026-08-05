@@ -2,7 +2,7 @@
 
 export const dynamic = "force-static";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import katex from "katex";
 import "katex/contrib/mhchem";
 import ReactMarkdown from "react-markdown";
@@ -11,8 +11,11 @@ import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import EquationQuiz from "./equation-quiz";
 import PaperMode from "./paper-mode";
+import { PracticeHeader, PracticeNavigation } from "./practice-header";
 import { publicPath } from "./public-path";
 import { forbiddenColorPair, takeWithFinalColorCheck } from "./question-policy";
+import { deleteAccountData, loadAccountData, saveAccountData } from "./account-storage";
+import { appendHistory, loadPracticeHistory, type HistoryRecord } from "./history-storage";
 
 type Source = {
   source_id: string;
@@ -118,12 +121,12 @@ type StoredQuestion = {
 };
 
 type StoredSession = {
-  version: 1;
+  version: 1 | 2;
   datasetVersion: string;
   savedAt: string;
   elementScope?: string[];
   appMode: AppMode;
-  practiceHistory: Array<{
+  practiceHistory?: Array<{
     question: StoredQuestion;
     selected: string[];
     submitted: boolean;
@@ -439,7 +442,7 @@ function isStoredSession(value: unknown): value is StoredSession {
       && Array.isArray(candidate.correctIds)
       && Array.isArray(candidate.evidenceIds);
   };
-  return session.version === 1
+  return (session.version === 1 || session.version === 2)
     && typeof session.datasetVersion === "string"
     && typeof session.savedAt === "string"
     && (session.elementScope === undefined || (
@@ -447,12 +450,17 @@ function isStoredSession(value: unknown): value is StoredSession {
       && session.elementScope.every((symbol) => typeof symbol === "string")
     ))
     && ["practice", "exam_setup", "exam_running", "exam_result"].includes(session.appMode || "")
-    && Array.isArray(session.practiceHistory)
-    && session.practiceHistory.every((entry) =>
-      Boolean(entry)
-      && isQuestion(entry.question)
-      && Array.isArray(entry.selected)
-      && typeof entry.submitted === "boolean"
+    && (
+      session.practiceHistory === undefined
+      || (
+        Array.isArray(session.practiceHistory)
+        && session.practiceHistory.every((entry) =>
+          Boolean(entry)
+          && isQuestion(entry.question)
+          && Array.isArray(entry.selected)
+          && typeof entry.submitted === "boolean"
+        )
+      )
     )
     && (
       session.practiceDraft === undefined
@@ -469,9 +477,24 @@ function isStoredSession(value: unknown): value is StoredSession {
     && Boolean(session.examConfig);
 }
 
-function storedRecordCount(session: StoredSession): number {
-  const answeredPractice = session.practiceHistory.filter((entry) => entry.submitted).length;
-  return answeredPractice + session.examQuestions.length;
+function restoreColorPracticeHistory(records: HistoryRecord[], data: Materials): PracticeEntry[] {
+  return records.map((record) => {
+    const payload = record.payload as { question?: StoredQuestion; selected?: string[] };
+    if (!payload?.question || !Array.isArray(payload.selected)) return null;
+    const question = restoreQuestion(payload.question, data);
+    return question ? { question, selected: new Set(payload.selected), submitted: true } : null;
+  }).filter((entry): entry is PracticeEntry => entry !== null);
+}
+
+function practiceStats(entries: PracticeEntry[]) {
+  return entries.reduce((stats, entry) => {
+    const correct = answerIsExact(entry.question, entry.selected);
+    return {
+      answered: stats.answered + 1,
+      correct: stats.correct + Number(correct),
+      streak: correct ? stats.streak + 1 : 0,
+    };
+  }, { answered: 0, correct: 0, streak: 0 });
 }
 
 function observationsForReview(question: GeneratedQuestion, data: Materials): Observation[] {
@@ -856,40 +879,51 @@ function ColorQuiz({ onSwitchToEquations, onSwitchToPaper }: { onSwitchToEquatio
   const [scopeEditorOpen, setScopeEditorOpen] = useState(false);
   const [scopeEditorView, setScopeEditorView] = useState<"groups" | "custom">("groups");
   const [generationError, setGenerationError] = useState<string | null>(null);
+  const savedExamStartRef = useRef<number | null>(null);
 
   useEffect(() => {
     Promise.all([
       fetch(publicPath("/materials.v1.json")),
       fetch(publicPath("/question-formats.cqf.json")),
+      loadAccountData<StoredSession>(SESSION_STORAGE_KEY),
+      loadPracticeHistory("color"),
     ])
-      .then(async ([dataResponse, formatResponse]) => {
+      .then(async ([dataResponse, formatResponse, savedSession, historyRecords]) => {
         if (!dataResponse.ok || !formatResponse.ok) throw new Error("物质库或题目格式载入失败");
-        return [await dataResponse.json(), await formatResponse.json()] as [Materials, FormatLanguage];
+        return [await dataResponse.json(), await formatResponse.json(), savedSession, historyRecords] as [Materials, FormatLanguage, StoredSession | null, HistoryRecord[]];
       })
-      .then(([payload, language]) => {
+      .then(([payload, language, saved, historyRecords]) => {
         setData(payload);
         setFormatLanguage(language);
-        try {
-          const saved = window.localStorage.getItem(SESSION_STORAGE_KEY);
-          if (saved) {
-            const parsed: unknown = JSON.parse(saved);
-            const datasetVersion = payload.metadata.dataset_version || "unknown";
-            if (
-              isStoredSession(parsed)
-              && parsed.datasetVersion === datasetVersion
-              && storedRecordCount(parsed) > 0
-            ) {
-              setPendingRestore(parsed);
-              return;
-            }
-            window.localStorage.removeItem(SESSION_STORAGE_KEY);
+        const accountPractice = restoreColorPracticeHistory(historyRecords, payload);
+        setPracticeHistory(accountPractice);
+        setStats(practiceStats(accountPractice));
+        if (saved) {
+          const datasetVersion = payload.metadata.dataset_version || "unknown";
+          if (
+            isStoredSession(saved)
+            && saved.datasetVersion === datasetVersion
+            && (accountPractice.length > 0 || Boolean(saved.practiceDraft) || saved.examQuestions.length > 0)
+          ) {
+            setPendingRestore({
+              ...saved,
+              version: 2,
+              practiceHistory: accountPractice.map((entry) => ({
+                question: serializeQuestion(entry.question),
+                selected: [...entry.selected],
+                submitted: true,
+              })),
+              practiceIndex: saved.practiceDraft ? accountPractice.length : Math.max(0, accountPractice.length - 1),
+              stats: practiceStats(accountPractice),
+            });
+            return;
           }
-        } catch {
-          window.localStorage.removeItem(SESSION_STORAGE_KEY);
+          void deleteAccountData(SESSION_STORAGE_KEY);
         }
         const first = generateScopedQuestion(payload, language, "color_of", DEFAULT_ELEMENT_SCOPE);
         setQuestion(first);
         setPracticeDraft({ question: first, selected: new Set(), submitted: false });
+        setPracticeIndex(accountPractice.length);
         setStorageReady(true);
       })
       .catch((error: Error) => setLoadError(error.message));
@@ -897,16 +931,15 @@ function ColorQuiz({ onSwitchToEquations, onSwitchToPaper }: { onSwitchToEquatio
 
   const startFreshSession = useCallback(() => {
     if (!data || !formatLanguage) return;
-    window.localStorage.removeItem(SESSION_STORAGE_KEY);
+    void deleteAccountData(SESSION_STORAGE_KEY);
     const first = generateScopedQuestion(data, formatLanguage, "color_of", DEFAULT_ELEMENT_SCOPE);
     setQuestion(first);
     setFormat("color_of");
     setSelected(new Set());
     setSubmitted(false);
-    setPracticeHistory([]);
     setPracticeDraft({ question: first, selected: new Set(), submitted: false });
-    setPracticeIndex(0);
-    setStats({ answered: 0, correct: 0, streak: 0 });
+    setPracticeIndex(practiceHistory.length);
+    setStats(practiceStats(practiceHistory));
     setExamConfig(DEFAULT_EXAM_CONFIG);
     setExamQuestions([]);
     setExamAnswers([]);
@@ -921,11 +954,11 @@ function ColorQuiz({ onSwitchToEquations, onSwitchToPaper }: { onSwitchToEquatio
     setAppMode("practice");
     setPendingRestore(null);
     setStorageReady(true);
-  }, [data, formatLanguage]);
+  }, [data, formatLanguage, practiceHistory]);
 
   const restoreSavedSession = useCallback(() => {
     if (!data || !pendingRestore) return;
-    const restoredPractice = pendingRestore.practiceHistory.map((entry) => {
+    const restoredPractice = (pendingRestore.practiceHistory || []).map((entry) => {
       const restoredQuestion = restoreQuestion(entry.question, data);
       return restoredQuestion
         ? { question: restoredQuestion, selected: new Set(entry.selected), submitted: entry.submitted }
@@ -1031,19 +1064,18 @@ function ColorQuiz({ onSwitchToEquations, onSwitchToPaper }: { onSwitchToEquatio
   }, [data, pendingRestore, startFreshSession]);
 
   useEffect(() => {
+    if (data && formatLanguage && pendingRestore) restoreSavedSession();
+  }, [data, formatLanguage, pendingRestore, restoreSavedSession]);
+
+  useEffect(() => {
     if (!storageReady || !data || (!practiceHistory.length && !practiceDraft)) return;
     const timer = window.setTimeout(() => {
       const session: StoredSession = {
-        version: 1,
+        version: 2,
         datasetVersion: data.metadata.dataset_version || "unknown",
         savedAt: new Date().toISOString(),
         elementScope: [...elementScope],
         appMode,
-        practiceHistory: practiceHistory.map((entry) => ({
-          question: serializeQuestion(entry.question),
-          selected: [...entry.selected],
-          submitted: entry.submitted,
-        })),
         practiceDraft: practiceDraft ? {
           question: serializeQuestion(practiceDraft.question),
           selected: [...practiceDraft.selected],
@@ -1057,11 +1089,7 @@ function ColorQuiz({ onSwitchToEquations, onSwitchToPaper }: { onSwitchToEquatio
         examStartedAt,
         examEndedAt,
       };
-      try {
-        window.localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(session));
-      } catch {
-        // If browser storage is unavailable or full, the in-memory session remains usable.
-      }
+      void saveAccountData(SESSION_STORAGE_KEY, session);
     }, 120);
     return () => window.clearTimeout(timer);
   }, [
@@ -1243,6 +1271,7 @@ function ColorQuiz({ onSwitchToEquations, onSwitchToPaper }: { onSwitchToEquatio
       setExamAnswers(questions.map(() => new Set()));
       setExamIndex(0);
       setExamStartedAt(now);
+      savedExamStartRef.current = null;
       setExamEndedAt(null);
       setRemainingSeconds(examConfig.durationMinutes * 60);
       setFormat(sequence[0]);
@@ -1257,10 +1286,46 @@ function ColorQuiz({ onSwitchToEquations, onSwitchToPaper }: { onSwitchToEquatio
   };
 
   const finishExam = useCallback(() => {
-    setExamEndedAt(Date.now());
+    const endedAt = Date.now();
+    if (examStartedAt !== null && savedExamStartRef.current !== examStartedAt) {
+      savedExamStartRef.current = examStartedAt;
+      const results = examQuestions.map((item, index) => {
+        const answer = examAnswers[index] || new Set<string>();
+        return { question: item, selected: answer, correct: answerIsExact(item, answer) };
+      });
+      const createdAt = Math.floor(endedAt / 1000);
+      void appendHistory([
+        {
+          clientKey: `color-exam-${examStartedAt}`,
+          recordType: "exam",
+          quizKind: "color",
+          source: "exam",
+          payload: {
+            version: 1,
+            config: examConfig,
+            questions: examQuestions.map(serializeQuestion),
+            answers: examAnswers.map((answer) => [...answer]),
+            startedAt: examStartedAt,
+            endedAt,
+            datasetVersion: data?.metadata.dataset_version || "unknown",
+          },
+          createdAt,
+        },
+        ...results.map((result, index) => ({
+          clientKey: `color-exam-question-${examStartedAt}-${index}`,
+          recordType: "practice" as const,
+          quizKind: "color" as const,
+          source: "exam" as const,
+          correct: result.correct,
+          payload: { version: 1, question: serializeQuestion(result.question), selected: [...result.selected] },
+          createdAt,
+        })),
+      ]);
+    }
+    setExamEndedAt(endedAt);
     setSubmitted(false);
     setAppMode("exam_result");
-  }, []);
+  }, [data?.metadata.dataset_version, examAnswers, examConfig, examQuestions, examStartedAt]);
 
   useEffect(() => {
     if (appMode !== "exam_running" || examStartedAt === null) return;
@@ -1316,6 +1381,15 @@ function ColorQuiz({ onSwitchToEquations, onSwitchToPaper }: { onSwitchToEquatio
       correct: current.correct + Number(isExact),
       streak: isExact ? current.streak + 1 : 0,
     }));
+    void appendHistory([{
+      clientKey: `color-practice-${question.id}`,
+      recordType: "practice",
+      quizKind: "color",
+      source: "practice",
+      correct: isExact,
+      payload: { version: 1, question: serializeQuestion(question), selected: [...selected] },
+      createdAt: Math.floor(Date.now() / 1000),
+    }]);
   }, [appMode, isExact, practiceHistory.length, question, selected, submitted]);
 
   useEffect(() => {
@@ -1344,28 +1418,6 @@ function ColorQuiz({ onSwitchToEquations, onSwitchToPaper }: { onSwitchToEquatio
 
   if (loadError) {
     return <main className="loading"><div><b>无法载入物质数据库</b><p>{loadError}</p></div></main>;
-  }
-  if (data && formatLanguage && pendingRestore) {
-    const savedTime = new Date(pendingRestore.savedAt);
-    return (
-      <main className="recovery-screen">
-        <section className="recovery-card">
-          <span className="recovery-mark">续</span>
-          <div className="panel-label">发现上次的本地记录</div>
-          <h1>是否保留并恢复？</h1>
-          <p>记录只保存在当前设备的这个浏览器中，不会上传。继续后会恢复题目、答案、练习统计以及考试进度或结果。</p>
-          <div className="recovery-summary">
-            <div><strong>{pendingRestore.practiceHistory.filter((entry) => entry.submitted).length}</strong><span>道已作答记录</span></div>
-            <div><strong>{pendingRestore.examQuestions.length}</strong><span>道考试记录</span></div>
-            <div><strong>{Number.isNaN(savedTime.getTime()) ? "—" : savedTime.toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}</strong><span>最近保存</span></div>
-          </div>
-          <div className="recovery-actions">
-            <button className="navigation-action danger-action" onClick={startFreshSession}>清空并重新开始</button>
-            <button className="primary-action" onClick={restoreSavedSession}>保留并继续</button>
-          </div>
-        </section>
-      </main>
-    );
   }
   if (!data || !formatLanguage || !question) {
     return <main className="loading"><div className="loader" /><p>正在整理物质与颜色关系…</p></main>;
@@ -1428,28 +1480,21 @@ function ColorQuiz({ onSwitchToEquations, onSwitchToPaper }: { onSwitchToEquatio
 
   return (
     <main className="app-shell">
-      <header className="topbar">
-        <div className="brand">
-          <span className="brand-mark">EC</span>
-          <div><strong>元素化学 · 色谱</strong><small>宋天佑《无机化学》颜色性质训练</small></div>
-        </div>
-        <div className="topbar-actions">
-          <div className="quiz-switch" aria-label="题库切换">
-            <button className="active">颜色 Quiz</button>
-            <button onClick={onSwitchToEquations}>方程式 Quiz</button>
-            <button onClick={onSwitchToPaper}>试卷模式</button>
-          </div>
-          <a className="topbar-button topbar-link" href={publicPath("/review/")}>反应式复核</a>
+      <PracticeHeader>
+          <PracticeNavigation
+            active="colors"
+            onEquations={onSwitchToEquations}
+            onPaper={appMode === "exam_running" ? undefined : onSwitchToPaper}
+            onExam={() => setAppMode("exam_setup")}
+            examActive={appMode !== "practice"}
+            examDisabled={appMode === "exam_running"}
+          />
           {appMode === "exam_running" ? (
             <div className={remainingSeconds <= 60 ? "exam-clock urgent" : "exam-clock"}>
               <span>考试倒计时</span><b>{formatDuration(remainingSeconds)}</b>
             </div>
-          ) : (
-            <div className="dataset-pill"><span className="live-dot" />现场生成 · {data.metadata.substanceCount.toLocaleString()} 种物质</div>
-          )}
-          {appMode === "practice" ? <button className="topbar-button" onClick={() => setAppMode("exam_setup")}>考试模式</button> : null}
-        </div>
-      </header>
+          ) : null}
+      </PracticeHeader>
 
       {scopeEditorOpen ? (
         <div
@@ -1569,7 +1614,7 @@ function ColorQuiz({ onSwitchToEquations, onSwitchToPaper }: { onSwitchToEquatio
           <div className="exam-heading">
             <span className="panel-label">考试设置</span>
             <h1>生成一份限时试卷</h1>
-            <p>三种题型按设定数量随机混排并等权计分。考试中可前后浏览并修改答案，不显示解析；交卷或倒计时结束后统一评分并提供整卷解析。</p>
+            <p>设置题量、时长与分值，准备好后开始作答。</p>
           </div>
           <div className="exam-config-grid">
             <label className="exam-field"><span>限时（分钟）</span><input type="number" min="1" max="180" value={examConfig.durationMinutes} onChange={(event) => setExamConfig((current) => ({ ...current, durationMinutes: Math.min(180, Math.max(1, Number(event.target.value) || 1)) }))} /></label>
@@ -1677,12 +1722,6 @@ function ColorQuiz({ onSwitchToEquations, onSwitchToPaper }: { onSwitchToEquatio
             <div><span>{stats.streak}</span><small>连续正确</small></div>
           </div>
 
-          <div className="database-note">
-            <b>物质数据库</b>
-            <p>{data.metadata.observationCount.toLocaleString()} 条规范观察</p>
-            <p>{data.metadata.sourceCount.toLocaleString()} 条原文来源</p>
-            <span>题目不会预先保存，每次按格式规则重新组合。</span>
-          </div>
           </>
           )}
         </aside>
@@ -1798,7 +1837,6 @@ function ColorQuiz({ onSwitchToEquations, onSwitchToPaper }: { onSwitchToEquatio
         </aside>
       </section>
       )}
-      <footer><span>题目规则 CQF {formatLanguage.version}</span><span>快捷键：1–6 选择，←/→ 上一题/下一题，Enter 确认或继续</span><span>仅使用高置信度教材记录</span></footer>
     </main>
   );
 }

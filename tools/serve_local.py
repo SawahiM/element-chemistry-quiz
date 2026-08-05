@@ -22,6 +22,13 @@ PAGE_IMAGE_ROOT = APP_ROOT.parent / "pages" / "original"
 NODE = Path(r"C:\Users\PeterB\.cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin\node.exe")
 VINEXT = APP_ROOT / "node_modules" / "vinext" / "dist" / "cli.js"
 PUBLIC_PORT = 3000
+PUBLIC_HOST = "0.0.0.0"
+ONLINE_BUILD_ENVIRONMENT_KEYS = {
+    "github_pages",
+    "github_repository",
+    "next_public_base_path",
+    "vinext_prerender",
+}
 
 
 class ProxyHandler(BaseHTTPRequestHandler):
@@ -33,6 +40,18 @@ class ProxyHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         self.route_request(head_only=False)
+
+    def do_POST(self) -> None:
+        self.proxy_to_app(head_only=False)
+
+    def do_PUT(self) -> None:
+        self.proxy_to_app(head_only=False)
+
+    def do_DELETE(self) -> None:
+        self.proxy_to_app(head_only=False)
+
+    def do_OPTIONS(self) -> None:
+        self.proxy_to_app(head_only=False)
 
     def route_request(self, *, head_only: bool) -> None:
         request_path = urlsplit(self.path).path
@@ -127,13 +146,15 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 remaining -= len(chunk)
 
     def proxy_to_app(self, *, head_only: bool) -> None:
-        connection = http.client.HTTPConnection("127.0.0.1", self.app_port, timeout=30)
+        connection = http.client.HTTPConnection("localhost", self.app_port, timeout=30)
+        content_length = int(self.headers.get("Content-Length", "0") or "0")
+        body = self.rfile.read(content_length) if content_length else None
         headers = {
             key: value for key, value in self.headers.items()
-            if key.lower() not in {"host", "connection", "content-length"}
+            if key.lower() not in {"connection", "content-length"}
         }
         try:
-            connection.request("HEAD" if head_only else "GET", self.path, headers=headers)
+            connection.request(self.command, self.path, body=body, headers=headers)
             response = connection.getresponse()
             self.send_response(response.status, response.reason)
             for key, value in response.getheaders():
@@ -157,10 +178,11 @@ class ProxyHandler(BaseHTTPRequestHandler):
 def wait_for_port(port: int, timeout: float = 20.0) -> None:
     deadline = time.time() + timeout
     while time.time() < deadline:
-        with socket.socket() as probe:
-            probe.settimeout(0.3)
-            if probe.connect_ex(("127.0.0.1", port)) == 0:
+        try:
+            with socket.create_connection(("localhost", port), timeout=0.3):
                 return
+        except OSError:
+            pass
         time.sleep(0.2)
     raise RuntimeError("网页服务启动超时")
 
@@ -171,37 +193,74 @@ def find_free_port() -> int:
         return int(reservation.getsockname()[1])
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--no-open", action="store_true")
-    args = parser.parse_args()
-    if not NODE.exists() or not VINEXT.exists():
-        raise SystemExit("未找到本地网页运行环境。")
-    # Windows treats environment names case-insensitively. Some launchers expose
-    # both Path and PATH, which can make CreateProcess reject the environment.
+def local_environment() -> dict[str, str]:
+    """Build an environment that cannot inherit GitHub Pages URL prefixes."""
     environment = {
-        key: value for key, value in os.environ.items()
+        key: value
+        for key, value in os.environ.items()
         if key.lower() != "path"
+        and key.lower() not in ONLINE_BUILD_ENVIRONMENT_KEYS
     }
     inherited_path = next(
         (value for key, value in os.environ.items() if key.lower() == "path"),
         "",
     )
     environment["Path"] = f"{NODE.parent};{inherited_path}"
+    return environment
+
+
+def build_local_site(environment: dict[str, str]) -> None:
+    print("正在生成本地版网页……", flush=True)
+    subprocess.run(
+        [str(NODE), str(VINEXT), "build"],
+        cwd=APP_ROOT,
+        env=environment,
+        check=True,
+    )
+
+
+def lan_addresses(port: int) -> list[str]:
+    addresses = {"127.0.0.1"}
+    try:
+        addresses.update(socket.gethostbyname_ex(socket.gethostname())[2])
+    except OSError:
+        pass
+    usable = sorted(
+        address
+        for address in addresses
+        if ":" not in address and not address.startswith("169.254.")
+    )
+    return [f"http://{address}:{port}" for address in usable]
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--no-open", action="store_true")
+    parser.add_argument("--host", default=PUBLIC_HOST)
+    parser.add_argument("--port", default=PUBLIC_PORT, type=int)
+    args = parser.parse_args()
+    if not NODE.exists() or not VINEXT.exists():
+        raise SystemExit("未找到本地网页运行环境。")
+    # A previous GitHub Pages build may have left prefixed asset URLs in dist.
+    # Rebuild without online-only variables before starting the local server.
+    environment = local_environment()
+    build_local_site(environment)
     flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
     app_port = find_free_port()
     ProxyHandler.app_port = app_port
     app = subprocess.Popen(
-        [str(NODE), str(VINEXT), "start", "--port", str(app_port)],
+        [str(NODE), str(VINEXT), "dev", "--host", "127.0.0.1", "--port", str(app_port)],
         cwd=APP_ROOT,
         env=environment,
         creationflags=flags,
     )
     try:
         wait_for_port(app_port)
-        server = ThreadingHTTPServer(("127.0.0.1", PUBLIC_PORT), ProxyHandler)
-        address = f"http://127.0.0.1:{PUBLIC_PORT}"
-        print(f"元素化学颜色训练已启动：{address}")
+        server = ThreadingHTTPServer((args.host, args.port), ProxyHandler)
+        address = f"http://127.0.0.1:{args.port}"
+        print("元素化学题库已启动：", flush=True)
+        for available_address in lan_addresses(args.port):
+            print(f"  {available_address}", flush=True)
         if not args.no_open:
             webbrowser.open(address)
         try:

@@ -8,7 +8,7 @@ APP_ROOT = Path(__file__).resolve().parents[1]
 WORKSPACE = APP_ROOT.parent
 INPUT_PATH = WORKSPACE / "extraction" / "reaction_draft" / "reactions.json"
 SUMMARY_PATH = WORKSPACE / "extraction" / "reaction_draft" / "summary.json"
-OUTPUT_PATH = APP_ROOT / "public" / "reactions.review.v1.json"
+OUTPUT_PATH = APP_ROOT / "public" / "reactions.quiz.v1.json"
 
 
 def main() -> None:
@@ -20,17 +20,7 @@ def main() -> None:
             "reactionCount": summary["reaction_candidates"],
             "parsedCount": summary["parsed_reactions"],
             "balancedCount": summary["balanced_reactions"],
-            "needsReviewCount": summary["needs_review_reactions"],
-            "imbalancedCount": summary["imbalanced_reactions"],
-            "uncheckableCount": summary["uncheckable_reactions"],
-            "conditionsCount": summary["conditions_extracted"],
             "pagesScanned": summary["ocr_pages_scanned"],
-            "electronReactionCount": summary["electron_reactions"],
-            "electronParticipantCount": summary["electron_participants"],
-            "manualEditCount": summary.get("manual_edits_applied", 0),
-            "verifiedReviewCount": summary.get("verified_review_reactions", 0),
-            "rejectedReviewCount": summary.get("rejected_review_reactions", 0),
-            "unreviewedCount": summary.get("unreviewed_reactions", summary["reaction_candidates"]),
         },
         "reactions": [
             {
@@ -43,9 +33,7 @@ def main() -> None:
                 "parseStatus": row["parse_status"],
                 "isExercise": row["is_exercise"],
                 "uncertaintyFlags": row["uncertainty_flags"],
-                "isManualEdit": bool(row.get("manual_edit")),
-                "manualEditUpdatedAt": row.get("manual_edit_updated_at"),
-                "reviewStatus": row["review_status"],
+                "eligibleForQuiz": row["review_status"] != "rejected",
                 "participants": [
                     {
                         "side": item["side"],

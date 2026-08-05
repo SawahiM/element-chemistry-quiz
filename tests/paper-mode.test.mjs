@@ -101,4 +101,5 @@ test("paper mode supports adjustable ordered questions and dynamic A4 pagination
   assert.match(styles, /\.paper-answer-page \.paper-body \{ bottom: 13mm; \}/);
   assert.match(styles, /\.paper-answer-table/);
   assert.match(styles, /@page \{ size: A4 portrait; margin: 0; \}/);
+  assert.match(styles, /@media print \{[\s\S]*?\.paper-mode \{ padding: 0 !important; background: #fff; \}/);
 });
