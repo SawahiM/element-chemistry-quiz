@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import argparse
 import os
 import shutil
 import socket
@@ -95,10 +94,6 @@ def write_readme(path: Path) -> None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--skip-zip", action="store_true")
-    args = parser.parse_args()
-
     required = [WORKSPACE / "pages" / "original", APP_ROOT / "data" / "chemistry.sqlite", GXX, NODE, VINEXT]
     missing = [str(path) for path in required if not path.exists()]
     if missing:
@@ -136,16 +131,12 @@ def main() -> int:
     subprocess.run(compile_command, check=True, cwd=APP_ROOT, env=compile_environment)
     shutil.rmtree(build_temp, ignore_errors=True)
 
-    if not args.skip_zip:
-        print("[4/4] 生成 Windows ZIP……", flush=True)
-        archive = RELEASE_ROOT / "ElementChemistryDemo-Windows-x64.zip"
-        if archive.exists():
-            archive.unlink()
-        shutil.make_archive(str(archive.with_suffix("")), "zip", RELEASE_ROOT, DEMO_ROOT.name)
+    print("[4/4] 整理 Windows Demo 文件夹……", flush=True)
+    legacy_archive = RELEASE_ROOT / "ElementChemistryDemo-Windows-x64.zip"
+    if legacy_archive.exists():
+        legacy_archive.unlink()
 
     print(f"Demo: {DEMO_ROOT}")
-    if not args.skip_zip:
-        print(f"Archive: {RELEASE_ROOT / 'ElementChemistryDemo-Windows-x64.zip'}")
     return 0
 
 

@@ -11,6 +11,16 @@ function gcd(left: number, right: number): number {
   return a || 1;
 }
 
+export function coefficientIsExact(value: string, expectedNum: number, expectedDen: number): boolean {
+  const compact = value.trim();
+  const match = compact.match(/^(\d+)(?:\/(\d+))?$/);
+  if (!match) return false;
+  const numerator = Number(match[1]);
+  const denominator = match[2] ? Number(match[2]) : 1;
+  if (numerator < 1 || denominator < 1) return false;
+  return numerator * expectedDen === expectedNum * denominator;
+}
+
 function normalizeFormula(value: string): string {
   return value
     .trim()

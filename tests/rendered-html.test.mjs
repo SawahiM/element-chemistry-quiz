@@ -75,7 +75,9 @@ test("reaction review dataset and interface cover the full extraction", async ()
   assert.match(reviewPage, /导出复核结果/);
   assert.match(reviewPage, /splitEquation/);
   assert.match(reviewPage, /ChemicalTerm/);
-  assert.match(reviewPage, /bookPageImageUrl/);
+  assert.match(reviewPage, /pageImageUrl/);
+  assert.match(reviewPage, /\/page-images\/pdf_/);
+  assert.doesNotMatch(reviewPage, /\/book-pages\/pdf_/);
   assert.match(reviewPage, /原书扫描图/);
   assert.match(reviewPage, /打开原图/);
   assert.match(reviewPage, /setImageZoom/);

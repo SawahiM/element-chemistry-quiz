@@ -1,9 +1,12 @@
 "use client";
 
+export const dynamic = "force-static";
+
 import { useCallback, useEffect, useMemo, useState } from "react";
 import katex from "katex";
 import "katex/contrib/mhchem";
 import "./review.css";
+import { publicPath } from "../public-path";
 
 type Participant = {
   side: "reactant" | "product";
@@ -163,8 +166,8 @@ function decisionLabel(decision?: ReviewDecision): string {
   return "已排除";
 }
 
-function bookPageImageUrl(pdfPage: number): string {
-  return `/book-pages/pdf_${String(pdfPage).padStart(4, "0")}.jpeg`;
+function pageImageUrl(pdfPage: number): string {
+  return publicPath(`/page-images/pdf_${String(pdfPage).padStart(4, "0")}.jpeg`);
 }
 
 function clientId(prefix: string, index = 0): string {
@@ -339,7 +342,7 @@ export default function ReactionReviewPage() {
 
   useEffect(() => {
     setReviews(loadReviewMap());
-    fetch("/reactions.review.v1.json")
+    fetch(publicPath("/reactions.review.v1.json"))
       .then((response) => {
         if (!response.ok) throw new Error(`数据加载失败：${response.status}`);
         return response.json();
@@ -562,7 +565,7 @@ export default function ReactionReviewPage() {
   }, []);
 
   const reloadDataset = useCallback(async (keepSelectedId: string) => {
-    const response = await fetch(`/reactions.review.v1.json?updated=${Date.now()}`, {
+    const response = await fetch(publicPath(`/reactions.review.v1.json?updated=${Date.now()}`), {
       cache: "no-store",
     });
     if (!response.ok) throw new Error(`数据刷新失败：${response.status}`);
@@ -665,7 +668,7 @@ export default function ReactionReviewPage() {
   }, [manualEditIds, reloadDataset, selected]);
 
   if (error) {
-    return <main className="review-load-screen"><div><b>无法打开复核数据</b><p>{error}</p><a href="/">返回颜色题库</a></div></main>;
+    return <main className="review-load-screen"><div><b>无法打开复核数据</b><p>{error}</p><a href={publicPath("/")}>返回颜色题库</a></div></main>;
   }
   if (!data) {
     return <main className="review-load-screen"><div className="review-loader" /><p>正在整理反应方程式……</p></main>;
@@ -688,7 +691,7 @@ export default function ReactionReviewPage() {
           </span>
         </div>
         <nav className="review-nav">
-          <a href="/">颜色题库</a>
+          <a href={publicPath("/")}>颜色题库</a>
           <button onClick={exportReviews} disabled={!reviewedCount}>导出复核结果</button>
         </nav>
       </header>
@@ -904,7 +907,7 @@ export default function ReactionReviewPage() {
                       +
                     </button>
                     <a
-                      href={bookPageImageUrl(selected.source.pdfPage)}
+                      href={pageImageUrl(selected.source.pdfPage)}
                       target="_blank"
                       rel="noreferrer"
                     >
@@ -914,7 +917,7 @@ export default function ReactionReviewPage() {
                 </div>
                 <div className="review-book-page-frame">
                   <img
-                    src={bookPageImageUrl(selected.source.pdfPage)}
+                    src={pageImageUrl(selected.source.pdfPage)}
                     alt={`宋天佑《无机化学》PDF 第 ${selected.source.pdfPage} 页原书扫描图`}
                     style={{ width: `${imageZoom}%` }}
                   />

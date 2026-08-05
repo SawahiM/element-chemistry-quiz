@@ -1,5 +1,7 @@
 "use client";
 
+export const dynamic = "force-static";
+
 import { useCallback, useEffect, useMemo, useState } from "react";
 import katex from "katex";
 import "katex/contrib/mhchem";
@@ -8,6 +10,8 @@ import rehypeKatex from "rehype-katex";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import EquationQuiz from "./equation-quiz";
+import PaperMode from "./paper-mode";
+import { publicPath } from "./public-path";
 import { forbiddenColorPair, takeWithFinalColorCheck } from "./question-policy";
 
 type Source = {
@@ -296,7 +300,7 @@ function sourcePageLabel(source: Source): string {
 
 function PagePreview({ source }: { source: Source }) {
   const [open, setOpen] = useState(false);
-  const imageUrl = `/page-images/pdf_${String(source.pdf_page).padStart(4, "0")}.jpeg`;
+  const imageUrl = publicPath(`/page-images/pdf_${String(source.pdf_page).padStart(4, "0")}.jpeg`);
   return (
     <details className="page-preview" onToggle={(event) => setOpen(event.currentTarget.open)}>
       <summary>
@@ -825,7 +829,7 @@ function formatDuration(totalSeconds: number): string {
   return `${String(Math.floor(seconds / 60)).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`;
 }
 
-function ColorQuiz({ onSwitchToEquations }: { onSwitchToEquations: () => void }) {
+function ColorQuiz({ onSwitchToEquations, onSwitchToPaper }: { onSwitchToEquations: () => void; onSwitchToPaper: () => void }) {
   const [data, setData] = useState<Materials | null>(null);
   const [formatLanguage, setFormatLanguage] = useState<FormatLanguage | null>(null);
   const [format, setFormat] = useState<GeneratedQuestion["format"]>("color_of");
@@ -855,8 +859,8 @@ function ColorQuiz({ onSwitchToEquations }: { onSwitchToEquations: () => void })
 
   useEffect(() => {
     Promise.all([
-      fetch("/materials.v1.json"),
-      fetch("/question-formats.cqf.json"),
+      fetch(publicPath("/materials.v1.json")),
+      fetch(publicPath("/question-formats.cqf.json")),
     ])
       .then(async ([dataResponse, formatResponse]) => {
         if (!dataResponse.ok || !formatResponse.ok) throw new Error("物质库或题目格式载入失败");
@@ -1433,8 +1437,9 @@ function ColorQuiz({ onSwitchToEquations }: { onSwitchToEquations: () => void })
           <div className="quiz-switch" aria-label="题库切换">
             <button className="active">颜色 Quiz</button>
             <button onClick={onSwitchToEquations}>方程式 Quiz</button>
+            <button onClick={onSwitchToPaper}>试卷模式</button>
           </div>
-          <a className="topbar-button topbar-link" href="/review">反应式复核</a>
+          <a className="topbar-button topbar-link" href={publicPath("/review/")}>反应式复核</a>
           {appMode === "exam_running" ? (
             <div className={remainingSeconds <= 60 ? "exam-clock urgent" : "exam-clock"}>
               <span>考试倒计时</span><b>{formatDuration(remainingSeconds)}</b>
@@ -1799,8 +1804,11 @@ function ColorQuiz({ onSwitchToEquations }: { onSwitchToEquations: () => void })
 }
 
 export default function Home() {
-  const [quizBank, setQuizBank] = useState<"color" | "equation">("color");
+  const [quizBank, setQuizBank] = useState<"color" | "equation" | "paper">("color");
+  if (quizBank === "paper") {
+    return <PaperMode onSwitchToColors={() => setQuizBank("color")} onSwitchToEquations={() => setQuizBank("equation")} />;
+  }
   return quizBank === "color"
-    ? <ColorQuiz onSwitchToEquations={() => setQuizBank("equation")} />
-    : <EquationQuiz onSwitchToColors={() => setQuizBank("color")} />;
+    ? <ColorQuiz onSwitchToEquations={() => setQuizBank("equation")} onSwitchToPaper={() => setQuizBank("paper")} />
+    : <EquationQuiz onSwitchToColors={() => setQuizBank("color")} onSwitchToPaper={() => setQuizBank("paper")} />;
 }

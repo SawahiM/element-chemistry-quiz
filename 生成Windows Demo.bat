@@ -10,7 +10,7 @@ if errorlevel 1 (
   echo 打包失败，请保留本窗口中的错误信息。
 ) else (
   echo.
-  echo 打包完成：release\ElementChemistryDemo-Windows-x64.zip
+  echo 打包完成：release\ElementChemistryDemo
 )
 echo.
 pause

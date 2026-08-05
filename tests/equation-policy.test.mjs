@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { equationAnswerIsExact, formulaElements, parseEquationAnswer } from "../app/equation-policy.ts";
+import { coefficientIsExact, equationAnswerIsExact, formulaElements, parseEquationAnswer } from "../app/equation-policy.ts";
 
 const expected = [
   { formula: "NaOH", coefficientNum: 2, coefficientDen: 1 },
   { formula: "H2", coefficientNum: 1, coefficientDen: 1 },
 ];
 
-test("equation answers ignore substance order and optional coefficient one", () => {
+test("normalized equation parts ignore substance order", () => {
   assert.equal(equationAnswerIsExact(["H2", "2NaOH"], expected, true), true);
 });
 
@@ -30,4 +30,11 @@ test("fractional coefficients and element keyboard symbols parse", () => {
     coefficientDen: 2,
   });
   assert.deepEqual(formulaElements(["KMnO4", "H2SO4"]), ["K", "Mn", "O", "H", "S"]);
+});
+
+test("separate coefficient fields require an explicit equivalent value", () => {
+  assert.equal(coefficientIsExact("", 1, 1), false);
+  assert.equal(coefficientIsExact("1", 1, 1), true);
+  assert.equal(coefficientIsExact("2/4", 1, 2), true);
+  assert.equal(coefficientIsExact("2", 1, 1), false);
 });
