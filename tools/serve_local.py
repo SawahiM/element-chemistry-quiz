@@ -17,17 +17,16 @@ from urllib.parse import unquote, urlsplit
 
 APP_ROOT = Path(__file__).resolve().parents[1]
 TEXTBOOK = APP_ROOT.parent / "无机化学(宋天佑) 4th 下册.pdf"
-STATIC_ROOT = APP_ROOT / "dist" / "client"
+STATIC_ROOT = APP_ROOT / ".next" / "static"
 PAGE_IMAGE_ROOT = APP_ROOT.parent / "pages" / "original"
 NODE = Path(r"C:\Users\PeterB\.cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin\node.exe")
-VINEXT = APP_ROOT / "node_modules" / "vinext" / "dist" / "cli.js"
+NEXT = APP_ROOT / "node_modules" / "next" / "dist" / "bin" / "next"
 PUBLIC_PORT = 3000
 PUBLIC_HOST = "0.0.0.0"
 ONLINE_BUILD_ENVIRONMENT_KEYS = {
     "github_pages",
     "github_repository",
     "next_public_base_path",
-    "vinext_prerender",
 }
 
 
@@ -212,7 +211,7 @@ def local_environment() -> dict[str, str]:
 def build_local_site(environment: dict[str, str]) -> None:
     print("正在生成本地版网页……", flush=True)
     subprocess.run(
-        [str(NODE), str(VINEXT), "build"],
+        [str(NODE), str(NEXT), "build"],
         cwd=APP_ROOT,
         env=environment,
         check=True,
@@ -239,7 +238,7 @@ def main() -> int:
     parser.add_argument("--host", default=PUBLIC_HOST)
     parser.add_argument("--port", default=PUBLIC_PORT, type=int)
     args = parser.parse_args()
-    if not NODE.exists() or not VINEXT.exists():
+    if not NODE.exists() or not NEXT.exists():
         raise SystemExit("未找到本地网页运行环境。")
     # A previous GitHub Pages build may have left prefixed asset URLs in dist.
     # Rebuild without online-only variables before starting the local server.
@@ -249,7 +248,7 @@ def main() -> int:
     app_port = find_free_port()
     ProxyHandler.app_port = app_port
     app = subprocess.Popen(
-        [str(NODE), str(VINEXT), "dev", "--host", "127.0.0.1", "--port", str(app_port)],
+        [str(NODE), str(NEXT), "dev", "--hostname", "127.0.0.1", "--port", str(app_port)],
         cwd=APP_ROOT,
         env=environment,
         creationflags=flags,
