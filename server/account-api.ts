@@ -107,14 +107,22 @@ function cookies(request: Request): Record<string, string> {
   }));
 }
 
+function externalOrigin(request: Request): string {
+  const forwardedHost = request.headers.get("x-forwarded-host")?.split(",")[0]?.trim();
+  const host = forwardedHost || request.headers.get("host")?.trim();
+  const forwardedProtocol = request.headers.get("x-forwarded-proto")?.split(",")[0]?.trim();
+  const protocol = forwardedProtocol === "http" || forwardedProtocol === "https" ? forwardedProtocol : null;
+  return host && protocol ? `${protocol}://${host}` : new URL(request.url).origin;
+}
+
 function setCookie(name: string, value: string, request: Request, maxAge: number): string {
-  const secure = new URL(request.url).protocol === "https:" ? "; Secure" : "";
+  const secure = externalOrigin(request).startsWith("https://") ? "; Secure" : "";
   return `${name}=${encodeURIComponent(value)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${secure}`;
 }
 
 function jsonError(error: string, status: number): Response { return Response.json({ error }, { status }); }
 function jsonUser(user: AccountUser, status = 200): Response { return Response.json({ user }, { status }); }
-function sameOrigin(request: Request): boolean { const origin = request.headers.get("origin"); return !origin || origin === new URL(request.url).origin; }
+function sameOrigin(request: Request): boolean { const origin = request.headers.get("origin"); return !origin || origin === externalOrigin(request); }
 
 async function currentUser(request: Request): Promise<AccountUser | null> {
   const token = cookies(request)[SESSION_COOKIE];

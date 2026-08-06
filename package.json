@@ -10,7 +10,7 @@
     "build": "next build",
     "start": "next start",
     "data:equations": "python tools/build_equation_quiz_data.py",
-    "test": "npm run build && node --test tests/*.test.mjs",
+    "test": "next build && node --test tests/*.test.mjs",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
     "db:generate": "dotenv -e .env.local -- drizzle-kit generate",
     "db:push": "dotenv -e .env.local -- drizzle-kit push"
