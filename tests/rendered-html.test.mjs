@@ -1,26 +1,47 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-import test from "node:test";
+import { spawn } from "node:child_process";
+import net from "node:net";
+import test, { after, before } from "node:test";
+
+let server;
+let baseUrl;
+
+async function freePort() {
+  return await new Promise((resolve, reject) => {
+    const listener = net.createServer();
+    listener.once("error", reject);
+    listener.listen(0, "127.0.0.1", () => {
+      const address = listener.address();
+      listener.close(() => resolve(address.port));
+    });
+  });
+}
+
+before(async () => {
+  const port = await freePort();
+  baseUrl = `http://127.0.0.1:${port}`;
+  server = spawn(process.execPath, ["node_modules/next/dist/bin/next", "start", "--hostname", "127.0.0.1", "--port", String(port)], {
+    cwd: new URL("..", import.meta.url),
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  const deadline = Date.now() + 20_000;
+  while (Date.now() < deadline) {
+    try {
+      const response = await fetch(baseUrl);
+      if (response.ok) return;
+    } catch {}
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+  throw new Error("Next.js test server did not start");
+});
+
+after(() => {
+  server?.kill();
+});
 
 async function render(pathname = "/") {
-  const workerUrl = new URL("../dist/server/index.js", import.meta.url);
-  workerUrl.searchParams.set("test", `${process.pid}-${Date.now()}`);
-  const { default: worker } = await import(workerUrl.href);
-
-  return worker.fetch(
-    new Request(`http://localhost${pathname}`, {
-      headers: { accept: "text/html", ...(pathname === "/" ? {} : { cookie: "quiz_session=test-session" }) },
-    }),
-    {
-      ASSETS: {
-        fetch: async () => new Response("Not found", { status: 404 }),
-      },
-    },
-    {
-      waitUntil() {},
-      passThroughOnException() {},
-    },
-  );
+  return await fetch(`${baseUrl}${pathname}`, { headers: { accept: "text/html" } });
 }
 
 test("server-renders the credential-check shell before the chemistry quiz", async () => {
@@ -110,7 +131,7 @@ test("account history supports exams, compact practice, wrong answers, and delet
   const authGate = await readFile(new URL("../app/auth-gate.tsx", import.meta.url), "utf8");
   const colorQuiz = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
   const equationQuiz = await readFile(new URL("../app/equation-quiz.tsx", import.meta.url), "utf8");
-  const api = await readFile(new URL("../worker/auth-api.ts", import.meta.url), "utf8");
+  const api = await readFile(new URL("../server/account-api.ts", import.meta.url), "utf8");
   assert.match(authGate, /href="\/history"/);
   assert.match(historyPage, /考试记录/);
   assert.match(historyPage, /做题记录/);
@@ -141,6 +162,6 @@ test("account history supports exams, compact practice, wrong answers, and delet
   assert.match(equationQuiz, /restoreEquationPracticeHistory/);
   assert.match(equationQuiz, /<PracticeHeader>/);
   assert.match(equationQuiz, /active="equations"/);
-  assert.match(api, /DELETE FROM history_records WHERE id = \? AND user_id = \?/);
-  assert.match(api, /DELETE FROM history_records WHERE user_id = \?/);
+  assert.match(api, /DELETE FROM history_records WHERE id = \$1 AND user_id = \$2/);
+  assert.match(api, /DELETE FROM history_records WHERE user_id = \$1/);
 });
