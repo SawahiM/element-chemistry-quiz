@@ -7,23 +7,35 @@ import { formulaElements } from "./equation-policy";
 import { ALL_ELEMENTS, elementScopeTitle, ElementScopePicker } from "./element-scope-picker";
 import { publicPath } from "./public-path";
 import { PracticeBrand, PracticeNavigation } from "./practice-header";
+import { forbiddenColorPair, takeWithFinalConflictCheck } from "./question-policy";
+import {
+  acceptedColorIds as acceptedIdsFor,
+  colorAcceptanceIndex,
+  colorNames,
+  colorTermsHaveAcceptanceRelation,
+  groupByAcceptedColor,
+  observationAcceptsColor,
+  type ColorTerm,
+} from "./color-semantics";
 
 type Observation = {
   id: string;
   substanceId: string;
+  colorId: string;
   formula: string | null;
   formulaMhchem: string | null;
   name: string | null;
   displayLabel: string;
   displayMode: "mhchem" | "text";
   color: string;
+  acceptedColorIds: string[];
   physicalState: string | null;
   focusElement: string | null;
   colorQuestionEligible: boolean;
   selectionQuestionEligible: boolean;
 };
 
-type Materials = { observations: Observation[] };
+type Materials = { colors: ColorTerm[]; observations: Observation[] };
 
 type Participant = {
   side: "reactant" | "product";
@@ -52,7 +64,7 @@ type Reaction = {
 };
 
 type ReactionDataset = { reactions: Reaction[] };
-type ColorQuestion = { target: Observation; targetColor: string; choices: Observation[]; colorChoices?: string[] };
+type ColorQuestion = { target: Observation; targetColorId: string; targetColor: string; choices: Observation[]; colorChoices?: string[] };
 type PaperData = {
   colorOf: ColorQuestion[];
   whichOne: ColorQuestion[];
@@ -126,49 +138,89 @@ function hasPrintableColor(item: Observation): boolean {
   return item.color.length <= 6 && !/[A-Za-z0-9*()（）]/.test(item.color);
 }
 
-function makeColorOf(observations: Observation[], count: number): ColorQuestion[] {
+function paperColorConflict(data: Materials) {
+  const acceptance = colorAcceptanceIndex(data.colors);
+  const names = colorNames(data.colors);
+  return (leftColorId: string, rightColorId: string): boolean =>
+    colorTermsHaveAcceptanceRelation(acceptance, leftColorId, rightColorId)
+    || forbiddenColorPair(names.get(leftColorId) || "", names.get(rightColorId) || "");
+}
+
+function makeColorOf(data: Materials, count: number): ColorQuestion[] {
+  const observations = data.observations;
+  const names = colorNames(data.colors);
+  const conflicts = paperColorConflict(data);
   const eligible = shuffled(uniqueBy(
     observations.filter((item) => item.colorQuestionEligible && hasPrintableColor(item)),
     (item) => `${item.substanceId}|${item.color}|${item.physicalState || ""}`,
   ));
-  const allColors = [...new Set(eligible.map((item) => item.color))];
-  return eligible.slice(0, count).map((target) => ({
-    target,
-    targetColor: target.color,
-    choices: [],
-    colorChoices: shuffled([target.color, ...shuffled(allColors.filter((color) => color !== target.color)).slice(0, 3)]),
-  }));
-}
-
-function makeWhichOne(observations: Observation[], count: number): ColorQuestion[] {
-  const eligible = uniqueBy(
-    observations.filter((item) => item.selectionQuestionEligible && hasPrintableColor(item)),
-    (item) => `${item.substanceId}|${item.color}`,
-  );
-  const colors = shuffled([...new Set(eligible.map((item) => item.color))]);
-  return colors.slice(0, count).map((targetColor) => {
-    const target = shuffled(eligible.filter((item) => item.color === targetColor))[0];
-    const wrong = shuffled(eligible.filter((item) => item.color !== targetColor && item.substanceId !== target.substanceId));
-    return { target, targetColor, choices: shuffled([target, ...uniqueBy(wrong, (item) => item.substanceId).slice(0, 3)]) };
+  return eligible.slice(0, count).map((target) => {
+    const accepted = new Set(acceptedIdsFor(target));
+    const targetColorId = shuffled([...accepted])[0];
+    const targetColor = names.get(targetColorId) || target.color;
+    const distractors = takeWithFinalConflictCheck(
+      [targetColorId],
+      shuffled(data.colors.filter((color) => !accepted.has(color.id) && color.name.length <= 6)),
+      3,
+      (color) => color.id,
+      conflicts,
+    )
+      .map((color) => color.name);
+    return { target, targetColorId, targetColor, choices: [], colorChoices: shuffled([targetColor, ...distractors]) };
   });
 }
 
-function makeWhichAre(observations: Observation[], count: number): ColorQuestion[] {
+function makeWhichOne(data: Materials, count: number): ColorQuestion[] {
+  const observations = data.observations;
+  const names = colorNames(data.colors);
   const eligible = uniqueBy(
     observations.filter((item) => item.selectionQuestionEligible && hasPrintableColor(item)),
     (item) => `${item.substanceId}|${item.color}`,
   );
-  const groups = new Map<string, Observation[]>();
-  eligible.forEach((item) => groups.set(item.color, [...(groups.get(item.color) || []), item]));
-  const colors = shuffled([...groups.entries()].filter(([, items]) => items.length >= 3).map(([color]) => color));
-  return colors.slice(0, count).map((targetColor) => {
-    const correct = shuffled(groups.get(targetColor) || []).slice(0, 3);
-    const correctIds = new Set(correct.map((item) => item.substanceId));
+  const groups = groupByAcceptedColor(eligible);
+  const colors = shuffled([...groups.keys()]);
+  return colors.slice(0, count).map((targetColorId) => {
+    const group = groups.get(targetColorId) || [];
+    const target = shuffled(group)[0];
+    const correctSubstances = new Set(group.map((item) => item.substanceId));
     const wrong = uniqueBy(
-      shuffled(eligible.filter((item) => item.color !== targetColor && !correctIds.has(item.substanceId))),
+      shuffled(eligible.filter((item) => !correctSubstances.has(item.substanceId))),
       (item) => item.substanceId,
     ).slice(0, 3);
-    return { target: correct[0], targetColor, choices: shuffled([...correct, ...wrong]) };
+    return {
+      target,
+      targetColorId,
+      targetColor: names.get(targetColorId) || target.color,
+      choices: shuffled([target, ...wrong]),
+    };
+  });
+}
+
+function makeWhichAre(data: Materials, count: number): ColorQuestion[] {
+  const observations = data.observations;
+  const names = colorNames(data.colors);
+  const eligible = uniqueBy(
+    observations.filter((item) => item.selectionQuestionEligible && hasPrintableColor(item)),
+    (item) => `${item.substanceId}|${item.color}`,
+  );
+  const groups = groupByAcceptedColor(eligible);
+  const colors = shuffled([...groups.entries()]
+    .filter(([, items]) => new Set(items.map((item) => item.substanceId)).size >= 3)
+    .map(([colorId]) => colorId));
+  return colors.slice(0, count).map((targetColorId) => {
+    const group = uniqueBy(shuffled(groups.get(targetColorId) || []), (item) => item.substanceId);
+    const correct = group.slice(0, 3);
+    const allCorrectIds = new Set(group.map((item) => item.substanceId));
+    const wrong = uniqueBy(
+      shuffled(eligible.filter((item) => !allCorrectIds.has(item.substanceId))),
+      (item) => item.substanceId,
+    ).slice(0, 3);
+    return {
+      target: correct[0],
+      targetColorId,
+      targetColor: names.get(targetColorId) || correct[0].color,
+      choices: shuffled([...correct, ...wrong]),
+    };
   });
 }
 
@@ -219,9 +271,9 @@ function createPaper(materials: Materials, reactions: ReactionDataset, config: P
   const forward = reactionPool.slice(0, config.forward);
   const balanced = reactionPool.slice(forward.length, forward.length + config.balanced);
   return {
-    colorOf: makeColorOf(scopedMaterials.observations, config.colorOf),
-    whichOne: makeWhichOne(scopedMaterials.observations, config.whichOne),
-    whichAre: makeWhichAre(scopedMaterials.observations, config.whichAre),
+    colorOf: makeColorOf(scopedMaterials, config.colorOf),
+    whichOne: makeWhichOne(scopedMaterials, config.whichOne),
+    whichAre: makeWhichAre(scopedMaterials, config.whichAre),
     forward,
     balanced,
   };
@@ -282,11 +334,14 @@ function buildAnswerBlocks(paper: PaperData): AnswerBlock[] {
   }));
   paper.whichOne.forEach((item) => choices.push({
     number: number++,
-    answer: answerLetter(item.choices.findIndex((choice) => choice.color === item.targetColor)),
+    answer: answerLetter(item.choices.findIndex((choice) => choice.substanceId === item.target.substanceId)),
   }));
   paper.whichAre.forEach((item) => choices.push({
     number: number++,
-    answer: item.choices.map((choice, index) => choice.color === item.targetColor ? LETTERS[index] : "").filter(Boolean).join(""),
+    answer: item.choices
+      .map((choice, index) => observationAcceptsColor(choice, item.targetColorId) ? LETTERS[index] : "")
+      .filter(Boolean)
+      .join(""),
   }));
 
   const blocks: AnswerBlock[] = [{ kind: "answerTitle" }];

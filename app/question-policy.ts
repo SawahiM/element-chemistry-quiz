@@ -23,17 +23,34 @@ export function takeWithFinalColorCheck<T>(
   colorOf: (candidate: T) => string,
   forbiddenPairs: string[][] = [],
 ): T[] {
+  return takeWithFinalConflictCheck(
+    requiredColors,
+    candidates,
+    count,
+    colorOf,
+    (left, right) => forbiddenColorPair(left, right, forbiddenPairs),
+  );
+}
+
+export function takeWithFinalConflictCheck<K, T>(
+  requiredKeys: K[],
+  candidates: T[],
+  count: number,
+  keyOf: (candidate: T) => K,
+  conflicts: (left: K, right: K) => boolean,
+): T[] {
   const selected: T[] = [];
-  const colorsInQuestion = [...requiredColors];
+  const keysInQuestion = [...requiredKeys];
   for (const candidate of candidates) {
     if (selected.length >= count) break;
-    const color = colorOf(candidate);
-    if (colorsInQuestion.some((existing) => forbiddenColorPair(existing, color, forbiddenPairs))) continue;
+    const key = keyOf(candidate);
+    if (keysInQuestion.some((existing) => conflicts(existing, key) || conflicts(key, existing))) continue;
     selected.push(candidate);
-    colorsInQuestion.push(color);
+    keysInQuestion.push(key);
   }
-  if (hasForbiddenColorCooccurrence(colorsInQuestion, forbiddenPairs)) {
-    throw new Error("最终选项包含禁止同时出现的颜色");
+  if (keysInQuestion.some((key, index) =>
+    keysInQuestion.slice(index + 1).some((other) => conflicts(key, other) || conflicts(other, key)))) {
+    throw new Error("最终选项包含有向冲突关系");
   }
   return selected;
 }
