@@ -1,0 +1,8 @@
+[Unit]
+Description=Back up QuizApp PostgreSQL database
+After=postgresql.service
+Requires=postgresql.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/quizapp-db-backup

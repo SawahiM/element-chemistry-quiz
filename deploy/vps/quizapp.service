@@ -1,0 +1,25 @@
+[Unit]
+Description=QuizApp Next.js service
+After=network-online.target postgresql.service
+Wants=network-online.target
+Requires=postgresql.service
+
+[Service]
+Type=simple
+User=quizapp
+Group=quizapp
+WorkingDirectory=/opt/quizapp/current
+EnvironmentFile=/etc/quizapp.env
+Environment=NODE_ENV=production
+Environment=HOSTNAME=127.0.0.1
+Environment=PORT=3000
+Environment=NODE_OPTIONS=--max-old-space-size=192
+ExecStart=/usr/local/bin/node server.js
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=10
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
