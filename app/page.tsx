@@ -13,7 +13,16 @@ import EquationQuiz from "./equation-quiz";
 import PaperMode from "./paper-mode";
 import { PracticeHeader, PracticeNavigation } from "./practice-header";
 import { publicPath } from "./public-path";
-import { forbiddenColorPair, takeWithFinalColorCheck } from "./question-policy";
+import { forbiddenColorPair, takeWithFinalColorCheck, takeWithFinalConflictCheck } from "./question-policy";
+import {
+  acceptedColorIds as acceptedIdsFor,
+  colorAcceptanceIndex,
+  colorNames,
+  colorTermsHaveAcceptanceRelation,
+  groupByAcceptedColor,
+  observationAcceptsColor,
+  type ColorTerm,
+} from "./color-semantics";
 import { deleteAccountData, loadAccountData, saveAccountData } from "./account-storage";
 import { appendHistory, loadPracticeHistory, type HistoryRecord } from "./history-storage";
 
@@ -36,6 +45,9 @@ type Observation = {
   displayMode: "mhchem" | "text";
   color: string;
   colorKind: string;
+  sourceColors: string[];
+  acceptedColorIds: string[];
+  acceptanceReasons: Record<string, string>;
   physicalState: string | null;
   observationKind: string;
   medium: string | null;
@@ -54,6 +66,7 @@ type Materials = {
     colorQuestionEligibleCount: number;
     selectionQuestionEligibleCount: number;
   };
+  colors: ColorTerm[];
   observations: Observation[];
 };
 
@@ -588,6 +601,14 @@ function ExamReviewCard({
   );
 }
 
+function colorIdConflict(data: Materials, forbiddenPairs: string[][] = []) {
+  const acceptance = colorAcceptanceIndex(data.colors);
+  const names = colorNames(data.colors);
+  return (leftColorId: string, rightColorId: string): boolean =>
+    colorTermsHaveAcceptanceRelation(acceptance, leftColorId, rightColorId)
+    || forbiddenColorPair(names.get(leftColorId) || "", names.get(rightColorId) || "", forbiddenPairs);
+}
+
 function generateColorQuestion(data: Materials, spec: FormatSpec, previousId?: string): GeneratedQuestion {
   const policy = spec.choices.distractors;
   const eligible = data.observations.filter((item) => item.colorQuestionEligible && item.id !== previousId);
@@ -602,16 +623,23 @@ function generateColorQuestion(data: Materials, spec: FormatSpec, previousId?: s
     ),
     (item) => item.colorId,
   );
-  const acceptedColorIds = new Set(acceptedObservations.map((item) => item.colorId));
+  const acceptedColorIds = new Set(acceptedObservations.flatMap(acceptedIdsFor));
+  const answerColorId = randomItem([...acceptedColorIds]);
+  const answerColor = colorNames(data.colors).get(answerColorId);
+  if (!answerColor) throw new Error("颜色术语表缺少可接受答案");
+  const conflicts = colorIdConflict(data, policy?.forbidColorPairs);
   const correctForSubstance = new Set(
-    data.observations.filter((item) => item.substanceId === target.substanceId).map((item) => item.colorId),
+    data.observations
+      .filter((item) => item.substanceId === target.substanceId)
+      .flatMap(acceptedIdsFor),
   );
   const distractorCandidates = data.observations.filter(
     (item) =>
       item.selectionQuestionEligible &&
-      item.colorId !== target.colorId &&
+      item.colorId !== answerColorId &&
+      !acceptedColorIds.has(item.colorId) &&
       !correctForSubstance.has(item.colorId) &&
-      !forbiddenColorPair(target.color, item.color, policy?.forbidColorPairs),
+      !conflicts(answerColorId, item.colorId),
   );
   const preferred = distractorCandidates.filter(
     (item) =>
@@ -640,16 +668,16 @@ function generateColorQuestion(data: Materials, spec: FormatSpec, previousId?: s
     [...chosenRelated, ...general, ...overflow],
     (item) => item.colorId,
   );
-  const distractors = takeWithFinalColorCheck(
-    [target.color],
+  const distractors = takeWithFinalConflictCheck(
+    [answerColorId],
     rankedDistractors,
     spec.choices.count - 1,
-    (item) => item.color,
-    policy?.forbidColorPairs,
+    (item) => item.colorId,
+    conflicts,
   );
   if (distractors.length < spec.choices.count - 1) throw new Error("所选元素范围过窄，无法生成足够的颜色选项");
   const choices = shuffled([
-    { id: target.colorId, label: target.color },
+    { id: answerColorId, label: answerColor },
     ...distractors.map((item) => ({ id: item.colorId, label: item.color })),
   ]);
   return {
@@ -669,16 +697,19 @@ function generateSingleSubstanceQuestion(data: Materials, spec: FormatSpec, prev
   );
   if (!eligible.length) throw new Error("所选元素范围内没有可用于该题型的物质");
   const target = randomItem(eligible);
+  const targetColorId = randomItem(acceptedIdsFor(target));
+  const targetColor = colorNames(data.colors).get(targetColorId);
+  if (!targetColor) throw new Error("颜色术语表缺少目标颜色");
   const substancesWithTargetColor = new Set(
     data.observations
-      .filter((item) => item.selectionQuestionEligible && item.colorId === target.colorId)
+      .filter((item) => item.selectionQuestionEligible && observationAcceptsColor(item, targetColorId))
       .map((item) => item.substanceId),
   );
   const wrongPool = uniqueBy(
     shuffled(eligible.filter(
       (item) =>
         !substancesWithTargetColor.has(item.substanceId) &&
-        !forbiddenColorPair(target.color, item.color, policy?.forbidColorPairs),
+        !forbiddenColorPair(targetColor, item.color, policy?.forbidColorPairs),
     )),
     (item) => item.substanceId,
   ).sort((a, b) => {
@@ -706,7 +737,7 @@ function generateSingleSubstanceQuestion(data: Materials, spec: FormatSpec, prev
     (item) => item.substanceId,
   );
   const wrong = takeWithFinalColorCheck(
-    [target.color],
+    [targetColor],
     rankedWrong,
     wrongCount,
     (item) => item.color,
@@ -718,10 +749,10 @@ function generateSingleSubstanceQuestion(data: Materials, spec: FormatSpec, prev
     ...wrong.map((item) => ({ id: item.substanceId, label: item.displayLabel, observation: item })),
   ]);
   return {
-    id: `${target.id}-${Date.now()}`,
+    id: `${target.id}-${targetColorId}-${Date.now()}`,
     format: "which_one_is_color",
     target,
-    targetColor: target.color,
+    targetColor,
     choices,
     correctIds: new Set([target.substanceId]),
     evidence: [target],
@@ -731,24 +762,21 @@ function generateSingleSubstanceQuestion(data: Materials, spec: FormatSpec, prev
 function generateSelectionQuestion(data: Materials, spec: FormatSpec, previousColor?: string): GeneratedQuestion {
   const policy = spec.choices.distractors;
   const eligible = data.observations.filter((item) => item.selectionQuestionEligible);
-  const byColor = new Map<string, Observation[]>();
-  eligible.forEach((item) => {
-    const group = byColor.get(item.colorId) || [];
-    group.push(item);
-    byColor.set(item.colorId, group);
-  });
+  const byColor = groupByAcceptedColor(eligible);
+  const names = colorNames(data.colors);
   const viable = [...byColor.entries()].filter(
     ([, rows]) => uniqueBy(rows, (row) => row.substanceId).length >= 3,
   );
   if (!viable.length) throw new Error("所选元素范围内没有一种颜色对应足够多的物质，无法生成多选题");
-  const candidates = viable.filter(([, rows]) => rows[0].color !== previousColor);
-  const [, rawCorrect] = randomItem(candidates.length ? candidates : viable);
+  const candidates = viable.filter(([colorId]) => names.get(colorId) !== previousColor);
+  const [targetColorId, rawCorrect] = randomItem(candidates.length ? candidates : viable);
   const correctPool = uniqueBy(shuffled(rawCorrect), (row) => row.substanceId);
   const limits = spec.choices.correctCount || { min: 2, max: 3 };
   const desiredCorrect = limits.min + Math.floor(Math.random() * (limits.max - limits.min + 1));
   const correctCount = Math.min(correctPool.length, desiredCorrect);
   const correct = correctPool.slice(0, correctCount);
-  const targetColor = correct[0].color;
+  const targetColor = names.get(targetColorId);
+  if (!targetColor) throw new Error("颜色术语表缺少目标颜色");
   const substancesWithColor = new Set(rawCorrect.map((item) => item.substanceId));
   const preferredKind = correct[0].observationKind;
   const wrongPool = uniqueBy(
@@ -780,7 +808,7 @@ function generateSelectionQuestion(data: Materials, spec: FormatSpec, previousCo
     (item) => item.substanceId,
   );
   const wrong = takeWithFinalColorCheck(
-    correct.map((item) => item.color),
+    [targetColor],
     rankedWrong,
     wrongCount,
     (item) => item.color,
@@ -792,7 +820,7 @@ function generateSelectionQuestion(data: Materials, spec: FormatSpec, previousCo
     ...wrong.map((item) => ({ id: item.substanceId, label: item.displayLabel, observation: item })),
   ]);
   return {
-    id: `${correct[0].colorId}-${Date.now()}`,
+    id: `${targetColorId}-${Date.now()}`,
     format: "which_are_color",
     target: correct[0],
     targetColor,

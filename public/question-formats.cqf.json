@@ -1,7 +1,7 @@
 {
   "language": "ChemQuizFormat",
-  "version": "1.4",
-  "description": "题目格式只描述如何从物质观察数据库现场取样，不保存具体题目。",
+  "version": "1.5",
+  "description": "题目格式只描述如何从物质观察数据库现场取样；颜色判定使用原始写法映射和标准术语有向连接。",
   "formats": [
     {
       "id": "color_of",
@@ -18,13 +18,14 @@
       ],
       "choices": {
         "count": 4,
-        "answer": "acceptedColorIds",
+        "answer": "acceptedColorIdsIncludingGeneralizations",
         "distractors": {
           "strategy": "same_context_weighted",
           "preferSame": ["focusElement", "observationKind", "physicalState"],
           "focusElementProbability": 0.8,
           "focusElementMaxChoices": 2,
           "excludeCorrectForSubstance": true,
+          "forbidAcceptanceRelationsBetweenAnyChoices": true,
           "forbidColorPairs": [["白色", "无色"]]
         }
       },
@@ -52,7 +53,7 @@
           "preferSame": ["focusElement", "observationKind", "physicalState"],
           "focusElementProbability": 0.8,
           "focusElementMaxChoices": 2,
-          "excludeAnyCorrectForTargetColor": true,
+          "excludeAnyAcceptedForTargetColor": true,
           "forbidColorPairs": [["白色", "无色"]]
         }
       },
@@ -80,7 +81,7 @@
           "preferSame": ["focusElement", "observationKind"],
           "focusElementProbability": 0.8,
           "focusElementMaxChoices": 2,
-          "excludeAnyCorrectForTargetColor": true,
+          "excludeAnyAcceptedForTargetColor": true,
           "forbidColorPairs": [["白色", "无色"]]
         }
       },

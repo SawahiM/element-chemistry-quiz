@@ -21,18 +21,24 @@ for (const row of materials.observations) {
 const missingSources = materials.observations.filter((row) => !row.sources?.length);
 const eligibleSingle = materials.observations.filter((row) => row.colorQuestionEligible);
 const eligibleMulti = materials.observations.filter((row) => row.selectionQuestionEligible);
+const acceptedColorIds = (row) => row.acceptedColorIds?.length ? row.acceptedColorIds : [row.colorId];
 const colorGroups = new Map();
 for (const row of eligibleMulti) {
-  const group = colorGroups.get(row.colorId) || new Set();
-  group.add(row.substanceId);
-  colorGroups.set(row.colorId, group);
+  for (const colorId of acceptedColorIds(row)) {
+    const group = colorGroups.get(colorId) || new Set();
+    group.add(row.substanceId);
+    colorGroups.set(colorId, group);
+  }
 }
 const viableMultiColors = [...colorGroups.values()].filter((group) => group.size >= 3).length;
-const singleReverseViable = eligibleMulti.filter((target) => {
-  const substancesWithTargetColor = colorGroups.get(target.colorId) || new Set();
+const colorNames = new Map(materials.colors.map((color) => [color.id, color.name]));
+const reverseTargets = eligibleMulti.flatMap((target) => acceptedColorIds(target).map((colorId) => ({ colorId })));
+const singleReverseViable = reverseTargets.filter(({ colorId }) => {
+  const substancesWithTargetColor = colorGroups.get(colorId) || new Set();
+  const targetColor = colorNames.get(colorId);
   const wrongSubstances = new Set(eligibleMulti.filter((row) => {
-    const whiteColorlessConflict = target.color !== row.color &&
-      [target.color, row.color].every((color) => color === "白色" || color === "无色");
+    const whiteColorlessConflict = targetColor !== row.color &&
+      [targetColor, row.color].every((color) => color === "白色" || color === "无色");
     return !substancesWithTargetColor.has(row.substanceId) && !whiteColorlessConflict;
   }).map((row) => row.substanceId));
   return wrongSubstances.size >= 3;
@@ -48,8 +54,14 @@ if (requiredFormats.some((id) => !language.formats.some((format) => format.id ==
 if (missingSources.length) throw new Error(`${missingSources.length} observations have no source`);
 if (eligibleSingle.length < 4) throw new Error("Not enough single-choice observations");
 if (viableMultiColors < 2) throw new Error("Not enough colors for multiple-choice generation");
-if (singleReverseViable !== eligibleMulti.length) {
-  throw new Error(`${eligibleMulti.length - singleReverseViable} observations cannot generate four-choice reverse questions`);
+if (singleReverseViable !== reverseTargets.length) {
+  throw new Error(`${reverseTargets.length - singleReverseViable} accepted observation/color pairs cannot generate four-choice reverse questions`);
+}
+if (!materials.rawColorMappings?.length || materials.rawColorMappings.length !== materials.metadata.rawColorExpressionCount) {
+  throw new Error("Raw color mappings are missing or incomplete");
+}
+if (materials.colors.some((color) => !color.acceptedColorIds?.includes(color.id) || !Array.isArray(color.sourceAliases))) {
+  throw new Error("Standard colors must expose reflexive connections and reverse raw aliases");
 }
 const reverseSingleFormat = language.formats.find((item) => item.id === "which_one_is_color");
 if (reverseSingleFormat?.questionType !== "single_choice" || reverseSingleFormat?.choices?.count !== 4) {
@@ -99,6 +111,7 @@ console.log(JSON.stringify({
   eligibleMulti: eligibleMulti.length,
   viableMultiColors,
   singleReverseViable,
+  reverseTargetPairs: reverseTargets.length,
   focusElementCount: new Set(materials.observations.map((row) => row.focusElement).filter(Boolean)).size,
   ammoniumSulfideAcceptedColors: [...ammoniumSulfideColors].sort(),
   multiColorQualifiedSubstances,

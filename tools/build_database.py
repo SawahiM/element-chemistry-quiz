@@ -8,6 +8,16 @@ import sqlite3
 from collections import Counter, defaultdict
 from pathlib import Path
 
+from color_policy import (
+    COLOR_GENERALIZATIONS,
+    accepted_terms,
+    accepted_terms_for_raw,
+    expression_kind,
+    mapped_terms,
+    missing_policy_terms,
+    normalize_raw_expression,
+)
+
 
 APP_ROOT = Path(__file__).resolve().parents[1]
 WORKSPACE = APP_ROOT.parent
@@ -19,7 +29,7 @@ COMMON_COMPOSITES = {
     "银白", "银灰", "银黄", "灰白", "灰黑", "黑灰", "棕黑", "黄棕", "棕黄",
     "红棕", "棕红", "红褐", "棕褐", "黄橙", "橙黄", "橙红", "橘红", "橘黄",
     "黄绿", "灰绿", "蓝绿", "蓝黑", "红紫", "蓝紫", "紫红", "紫黑", "粉红",
-    "桃红", "玫瑰红", "洋红", "天蓝", "灰蓝",
+    "桃红", "玫瑰红", "洋红", "天蓝", "灰蓝", "白绿", "红黑", "绿黑", "绿蓝",
 }
 
 STATE_MAP = {
@@ -228,6 +238,27 @@ CREATE TABLE color_aliases (
   PRIMARY KEY (color_id, alias)
 );
 
+CREATE TABLE color_connections (
+  source_color_id TEXT NOT NULL REFERENCES colors(color_id) ON DELETE CASCADE,
+  target_color_id TEXT NOT NULL REFERENCES colors(color_id) ON DELETE CASCADE,
+  relation TEXT NOT NULL CHECK(relation IN ('broader')),
+  PRIMARY KEY (source_color_id, target_color_id)
+);
+
+CREATE TABLE raw_color_expressions (
+  raw_color_id TEXT PRIMARY KEY,
+  raw_text TEXT NOT NULL UNIQUE,
+  normalized_text TEXT NOT NULL,
+  expression_kind TEXT NOT NULL CHECK(expression_kind IN ('atom','range','alternative'))
+);
+
+CREATE TABLE raw_color_mappings (
+  raw_color_id TEXT NOT NULL REFERENCES raw_color_expressions(raw_color_id) ON DELETE CASCADE,
+  color_id TEXT NOT NULL REFERENCES colors(color_id) ON DELETE CASCADE,
+  mapping_kind TEXT NOT NULL,
+  PRIMARY KEY (raw_color_id, color_id)
+);
+
 CREATE TABLE observations (
   observation_id TEXT PRIMARY KEY,
   substance_id TEXT NOT NULL REFERENCES substances(substance_id),
@@ -258,10 +289,25 @@ CREATE TABLE observation_sources (
   UNIQUE (observation_id, pdf_page, candidate_id, block_index, row_index, evidence_text)
 );
 
+CREATE TABLE observation_raw_colors (
+  observation_id TEXT NOT NULL REFERENCES observations(observation_id) ON DELETE CASCADE,
+  raw_color_id TEXT NOT NULL REFERENCES raw_color_expressions(raw_color_id) ON DELETE CASCADE,
+  PRIMARY KEY (observation_id, raw_color_id)
+);
+
+CREATE TABLE observation_accepted_colors (
+  observation_id TEXT NOT NULL REFERENCES observations(observation_id) ON DELETE CASCADE,
+  color_id TEXT NOT NULL REFERENCES colors(color_id) ON DELETE CASCADE,
+  reason TEXT NOT NULL,
+  PRIMARY KEY (observation_id, color_id)
+);
+
 CREATE INDEX observations_substance_idx ON observations(substance_id);
 CREATE INDEX observations_color_idx ON observations(color_id);
 CREATE INDEX sources_observation_idx ON observation_sources(observation_id);
 CREATE INDEX sources_page_idx ON observation_sources(pdf_page);
+CREATE INDEX raw_color_mappings_color_idx ON raw_color_mappings(color_id);
+CREATE INDEX accepted_colors_color_idx ON observation_accepted_colors(color_id);
 """
 
 
@@ -291,6 +337,8 @@ def build(input_path: Path, db_path: Path, json_path: Path) -> dict:
     observation_ids: dict[tuple, str] = {}
     source_seen: set[tuple] = set()
     raw_color_counts: Counter[str] = Counter()
+    raw_mapping_specs: dict[str, dict[str, object]] = {}
+    observation_raw_ids: dict[str, set[str]] = defaultdict(set)
 
     for row in high:
         formula = normalize_formula(row.get("formula_normalized") or row.get("formula_raw"))
@@ -328,7 +376,25 @@ def build(input_path: Path, db_path: Path, json_path: Path) -> dict:
         printed_page = row.get("printed_page_estimate")
         if printed_page is not None:
             printed_page = int(printed_page) - 1
-        colors = normalize_colors(row.get("color_normalized") or row.get("color_raw") or "")
+        color_value = row.get("color_normalized") or row.get("color_raw") or ""
+        colors = normalize_colors(color_value)
+        raw_spellings = {
+            compact(row.get("color_raw")),
+            compact(row.get("color_normalized")),
+            normalize_raw_expression(color_value),
+        } - {""}
+        for raw_text in raw_spellings:
+            raw_color_id = stable_id("rawcol", raw_text)
+            raw_mapping_specs[raw_color_id] = {
+                "raw": raw_text,
+                "normalized": normalize_raw_expression(raw_text),
+                "kind": expression_kind(raw_text),
+                "mappings": mapped_terms(raw_text),
+            }
+            con.execute(
+                "INSERT OR IGNORE INTO raw_color_expressions VALUES (?, ?, ?, ?)",
+                (raw_color_id, raw_text, normalize_raw_expression(raw_text), expression_kind(raw_text)),
+            )
         for color in colors:
             color_id = stable_id("col", color["key"])
             con.execute(
@@ -347,6 +413,13 @@ def build(input_path: Path, db_path: Path, json_path: Path) -> dict:
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                 (observation_id, substance_id, color_id, state, kind, medium, conditions, float(row.get("extraction_confidence") or 0)),
             )
+            for raw_text in raw_spellings:
+                raw_color_id = stable_id("rawcol", raw_text)
+                observation_raw_ids[observation_id].add(raw_color_id)
+                con.execute(
+                    "INSERT OR IGNORE INTO observation_raw_colors VALUES (?, ?)",
+                    (observation_id, raw_color_id),
+                )
 
             source_key = (
                 observation_id, int(row["pdf_page"]), row.get("source_candidate_id"), row.get("source_block_index"),
@@ -365,6 +438,57 @@ def build(input_path: Path, db_path: Path, json_path: Path) -> dict:
                     row.get("source_candidate_id"), row.get("source_block_index"), row.get("source_row_index"),
                     json.dumps(bbox, ensure_ascii=False) if bbox is not None else None, evidence,
                 ),
+            )
+
+    color_name_to_id = {
+        row["display_name"]: row["color_id"]
+        for row in con.execute("SELECT color_id, display_name FROM colors")
+    }
+    missing_terms = missing_policy_terms(color_name_to_id)
+    if missing_terms:
+        raise ValueError(f"Color policy references terms absent from the dataset: {sorted(missing_terms)}")
+
+    for source_name, target_names in COLOR_GENERALIZATIONS.items():
+        for target_name in target_names:
+            con.execute(
+                "INSERT OR IGNORE INTO color_connections VALUES (?, ?, 'broader')",
+                (color_name_to_id[source_name], color_name_to_id[target_name]),
+            )
+
+    for raw_color_id, spec in raw_mapping_specs.items():
+        for color_name, mapping_kind in spec["mappings"].items():
+            color_id = color_name_to_id.get(color_name)
+            if not color_id:
+                raise ValueError(f"Raw color {spec['raw']!r} maps to unknown term {color_name!r}")
+            con.execute(
+                "INSERT OR IGNORE INTO raw_color_mappings VALUES (?, ?, ?)",
+                (raw_color_id, color_id, mapping_kind),
+            )
+
+    reason_priority = {
+        "exact": 5,
+        "range_endpoint": 4,
+        "alternative": 3,
+        "range_interior": 2,
+        "broader": 1,
+    }
+    observation_primary_colors = {
+        row["observation_id"]: row["color_id"]
+        for row in con.execute("SELECT observation_id, color_id FROM observations")
+    }
+    for observation_id, primary_color_id in observation_primary_colors.items():
+        accepted: dict[str, str] = {primary_color_id: "exact"}
+        for raw_color_id in observation_raw_ids.get(observation_id, set()):
+            raw_text = str(raw_mapping_specs[raw_color_id]["raw"])
+            for color_name, reason in accepted_terms_for_raw(raw_text).items():
+                color_id = color_name_to_id[color_name]
+                previous = accepted.get(color_id)
+                if previous is None or reason_priority[reason] > reason_priority[previous]:
+                    accepted[color_id] = reason
+        for color_id, reason in accepted.items():
+            con.execute(
+                "INSERT OR IGNORE INTO observation_accepted_colors VALUES (?, ?, ?)",
+                (observation_id, color_id, reason),
             )
 
     con.execute(
@@ -399,11 +523,12 @@ def build(input_path: Path, db_path: Path, json_path: Path) -> dict:
         )
 
     metadata = {
-        "schema_version": "1.1.0",
-        "dataset_version": "1.3.0",
+        "schema_version": "1.2.0",
+        "dataset_version": "1.4.0",
         "source_high_confidence_rows": str(len(high)),
         "build_policy": "non-exercise; confidence>=0.75; no uncertainty flags",
         "formula_display": "canonical text + mhchem",
+        "color_semantics": "raw bidirectional mappings + directed standard-term generalizations",
     }
     con.executemany("INSERT INTO metadata VALUES (?, ?)", metadata.items())
     con.commit()
@@ -422,6 +547,27 @@ def build(input_path: Path, db_path: Path, json_path: Path) -> dict:
 
     substance_map = {row["substance_id"]: row for row in substance_rows}
     color_map = {row["color_id"]: row for row in color_rows}
+    accepted_by_observation: dict[str, list[str]] = defaultdict(list)
+    acceptance_reasons_by_observation: dict[str, dict[str, str]] = defaultdict(dict)
+    for row in con.execute(
+        "SELECT observation_id, color_id, reason FROM observation_accepted_colors ORDER BY observation_id, color_id"
+    ):
+        accepted_by_observation[row["observation_id"]].append(row["color_id"])
+        acceptance_reasons_by_observation[row["observation_id"]][row["color_id"]] = row["reason"]
+    raw_colors_by_observation: dict[str, list[str]] = defaultdict(list)
+    for row in con.execute(
+        """SELECT r.observation_id, e.raw_text FROM observation_raw_colors r
+           JOIN raw_color_expressions e ON e.raw_color_id = r.raw_color_id
+           ORDER BY r.observation_id, e.raw_text"""
+    ):
+        raw_colors_by_observation[row["observation_id"]].append(row["raw_text"])
+    aliases_by_color: dict[str, list[str]] = defaultdict(list)
+    for row in con.execute(
+        """SELECT m.color_id, e.raw_text FROM raw_color_mappings m
+           JOIN raw_color_expressions e ON e.raw_color_id = m.raw_color_id
+           ORDER BY m.color_id, e.raw_text"""
+    ):
+        aliases_by_color[row["color_id"]].append(row["raw_text"])
     runtime_observations = []
     for row in observation_rows:
         substance = substance_map[row["substance_id"]]
@@ -438,6 +584,9 @@ def build(input_path: Path, db_path: Path, json_path: Path) -> dict:
             "displayMode": substance["display_mode"],
             "color": color["display_name"],
             "colorKind": color["color_kind"],
+            "sourceColors": raw_colors_by_observation[row["observation_id"]],
+            "acceptedColorIds": accepted_by_observation[row["observation_id"]] or [row["color_id"]],
+            "acceptanceReasons": acceptance_reasons_by_observation[row["observation_id"]],
             "physicalState": row["physical_state"],
             "observationKind": row["observation_kind"],
             "medium": row["medium"],
@@ -456,8 +605,24 @@ def build(input_path: Path, db_path: Path, json_path: Path) -> dict:
             "sourceCount": len(source_seen),
             "colorQuestionEligibleCount": sum(item["colorQuestionEligible"] for item in runtime_observations),
             "selectionQuestionEligibleCount": sum(item["selectionQuestionEligible"] for item in runtime_observations),
+            "rawColorExpressionCount": len(raw_mapping_specs),
+            "colorConnectionCount": sum(len(targets) for targets in COLOR_GENERALIZATIONS.values()),
         },
-        "colors": [{"id": row["color_id"], "name": row["display_name"], "kind": row["color_kind"]} for row in color_rows],
+        "colors": [{
+            "id": row["color_id"],
+            "name": row["display_name"],
+            "kind": row["color_kind"],
+            "acceptedColorIds": [color_name_to_id[name] for name in accepted_terms(row["display_name"])],
+            "sourceAliases": aliases_by_color[row["color_id"]],
+        } for row in color_rows],
+        "rawColorMappings": [{
+            "id": raw_color_id,
+            "raw": spec["raw"],
+            "normalized": spec["normalized"],
+            "kind": spec["kind"],
+            "colorIds": [color_name_to_id[name] for name in spec["mappings"]],
+            "colors": list(spec["mappings"]),
+        } for raw_color_id, spec in sorted(raw_mapping_specs.items(), key=lambda item: str(item[1]["raw"]))],
         "observations": runtime_observations,
     }
     json_path.write_text(json.dumps(payload, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
