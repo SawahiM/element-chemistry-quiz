@@ -1,4 +1,4 @@
-import { Pool, type QueryResultRow } from "pg";
+import postgres from "postgres";
 
 const SESSION_COOKIE = "quiz_session";
 const GUEST_COOKIE = "quiz_guest";
@@ -9,28 +9,29 @@ const VALID_DATA_KEY = /^[a-z0-9][a-z0-9_.-]{0,63}$/;
 
 type AccountUser = { id: string; username: string | null; displayName: string; accountType: "registered" | "guest" };
 type LoginRow = AccountUser & { passwordHash: string };
-let client: Pool | null = null;
+type SqlClient = ReturnType<typeof postgres>;
+type SqlParameter = string | number | boolean | null;
+
+let client: SqlClient | null = null;
 let schemaReady: Promise<void> | null = null;
 
-function getSql(): Pool {
+function getSql(): SqlClient {
   const databaseUrl = process.env.DATABASE_URL;
   if (!databaseUrl) throw new Error("DATABASE_URL is not configured.");
-  client ??= new Pool({
-    connectionString: databaseUrl,
+  client ??= postgres(databaseUrl, {
     max: 10,
-    idleTimeoutMillis: 30_000,
-    connectionTimeoutMillis: 5_000,
+    idle_timeout: 30,
+    connect_timeout: 5,
   });
   return client;
 }
 
-async function rows<T extends QueryResultRow>(statement: string, params: unknown[] = []): Promise<T[]> {
-  const result = await getSql().query<T>(statement, params);
-  return result.rows;
+async function rows<T extends Record<string, unknown>>(statement: string, params: SqlParameter[] = []): Promise<T[]> {
+  return await getSql().unsafe(statement, params) as unknown as T[];
 }
 
-async function execute(statement: string, params: unknown[] = []): Promise<void> {
-  await getSql().query(statement, params);
+async function execute(statement: string, params: SqlParameter[] = []): Promise<void> {
+  await getSql().unsafe(statement, params);
 }
 
 async function ensureAccountSchema(): Promise<void> {
@@ -265,7 +266,7 @@ async function history(request: Request): Promise<Response> {
   const records = Array.isArray(body.records) ? body.records : [];
   if (!records.length || records.length > 200) return jsonError("历史记录数量无效", 400);
   const now = Math.floor(Date.now() / 1000);
-  const values: unknown[] = [];
+  const values: SqlParameter[] = [];
   const placeholders: string[] = [];
   for (const value of records) {
     if (!value || typeof value !== "object") return jsonError("历史记录格式无效", 400);

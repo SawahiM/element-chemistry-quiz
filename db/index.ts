@@ -1,17 +1,16 @@
-import { drizzle } from "drizzle-orm/node-postgres";
-import { Pool } from "pg";
+import { drizzle } from "drizzle-orm/postgres-js";
+import postgres from "postgres";
 import * as schema from "./schema";
 
 function createDb() {
   const databaseUrl = process.env.DATABASE_URL;
   if (!databaseUrl) throw new Error("DATABASE_URL is not configured.");
-  const pool = new Pool({
-    connectionString: databaseUrl,
+  const client = postgres(databaseUrl, {
     max: 10,
-    idleTimeoutMillis: 30_000,
-    connectionTimeoutMillis: 5_000,
+    idle_timeout: 30,
+    connect_timeout: 5,
   });
-  return drizzle(pool, { schema });
+  return drizzle(client, { schema });
 }
 
 let database: ReturnType<typeof createDb> | null = null;
