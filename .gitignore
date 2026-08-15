@@ -40,7 +40,6 @@ next-env.d.ts
 /dist/
 /.wrangler/
 /outputs/
-/work/
 /release/
 /data/
 /.tools/
