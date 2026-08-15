@@ -1,6 +1,10 @@
 "use client";
 
+import Link from "next/link";
+
 import { FormEvent, useEffect, useState } from "react";
+import { clearAccountSessionCache } from "./account-storage";
+import { clearHistorySessionCache } from "./history-storage";
 
 type User = {
   id: string;
@@ -74,6 +78,8 @@ export default function AuthGate({ children }: { children: React.ReactNode }) {
 
   async function logout() {
     await fetch("/api/auth/logout", { method: "POST", credentials: "same-origin" });
+    clearAccountSessionCache();
+    clearHistorySessionCache();
     setUser(null);
     setMode("login");
   }
@@ -122,10 +128,10 @@ export default function AuthGate({ children }: { children: React.ReactNode }) {
   return (
     <>
       <div className="account-chip" aria-label="当前账户">
-        <a className="account-chip-link" href="/history" title="查看历史记录">
+        <Link className="account-chip-link" href="/history" title="查看历史记录">
           <span className="account-avatar">{user.accountType === "guest" ? "游" : user.displayName.slice(0, 1).toUpperCase()}</span>
           <span><b>{user.displayName}</b><small>{user.accountType === "guest" ? "游客 · 历史记录" : "账户 · 历史记录"}</small></span>
-        </a>
+        </Link>
         <button onClick={logout}>退出</button>
       </div>
       {children}

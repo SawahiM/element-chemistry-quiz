@@ -166,7 +166,8 @@ class ProxyHandler(BaseHTTPRequestHandler):
             if body:
                 self.wfile.write(body)
         except OSError as error:
-            self.send_error(HTTPStatus.BAD_GATEWAY, str(error))
+            print(f"[proxy] Next.js 暂不可用：{error}", flush=True)
+            self.send_error(HTTPStatus.BAD_GATEWAY, "Application server unavailable")
         finally:
             connection.close()
 
@@ -174,16 +175,53 @@ class ProxyHandler(BaseHTTPRequestHandler):
         print(f"[{self.log_date_time_string()}] {format % args}")
 
 
-def wait_for_port(port: int, timeout: float = 20.0) -> None:
+class ExclusiveThreadingHTTPServer(ThreadingHTTPServer):
+    """Prevent multiple launchers from sharing the same Windows port."""
+    allow_reuse_address = False
+
+    def server_bind(self) -> None:
+        if os.name == "nt" and hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        super().server_bind()
+
+
+def wait_for_app(process: subprocess.Popen[bytes], port: int, timeout: float = 20.0) -> None:
+    """Wait until Next is reachable and remains alive long enough to be usable."""
     deadline = time.time() + timeout
+    connected_at: float | None = None
     while time.time() < deadline:
+        exit_code = process.poll()
+        if exit_code is not None:
+            raise RuntimeError(f"Next.js 启动失败（退出代码 {exit_code}）")
         try:
             with socket.create_connection(("localhost", port), timeout=0.3):
-                return
+                if connected_at is None:
+                    connected_at = time.time()
+                elif time.time() - connected_at >= 1.0:
+                    return
         except OSError:
-            pass
+            connected_at = None
         time.sleep(0.2)
     raise RuntimeError("网页服务启动超时")
+
+
+def stop_process_tree(process: subprocess.Popen[bytes]) -> None:
+    """Stop Next and every worker it spawned, including on Windows."""
+    if process.poll() is not None:
+        return
+    if os.name == "nt":
+        subprocess.run(
+            ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+    else:
+        process.terminate()
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        process.kill()
 
 
 def find_free_port() -> int:
@@ -228,16 +266,15 @@ def local_environment(node: Path) -> dict[str, str]:
     return environment
 
 
-def ensure_port_available(host: str, port: int) -> None:
-    """Fail before starting Next when the public development port is busy."""
-    with socket.socket() as reservation:
-        try:
-            reservation.bind((host, port))
-        except OSError as error:
-            raise SystemExit(
-                f"本地端口 {port} 已被占用。请关闭占用该端口的程序后重试，"
-                f"或运行 serve_local.py --port 其他端口。"
-            ) from error
+def create_public_server(host: str, port: int) -> ExclusiveThreadingHTTPServer:
+    """Reserve the real HTTP socket up front, avoiding bind/check races."""
+    try:
+        return ExclusiveThreadingHTTPServer((host, port), ProxyHandler)
+    except OSError as error:
+        raise SystemExit(
+            f"本地端口 {port} 已被占用。请关闭占用该端口的程序后重试，"
+            f"或运行 serve_local.py --port 其他端口。"
+        ) from error
 
 
 def lan_addresses(port: int) -> list[str]:
@@ -267,11 +304,13 @@ def main() -> int:
         )
     if not NEXT.exists():
         raise SystemExit("未找到本地依赖，请先在 quiz_app 目录安装依赖。")
-    ensure_port_available(args.host, args.port)
+    server = create_public_server(args.host, args.port)
     # Development mode compiles on demand. It is faster for local testing and
     # does not touch the standalone production build used by the VPS.
     environment = local_environment(node)
-    flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+    environment["NEXT_DIST_DIR"] = ".next-local"
+    # Keep Next attached to this console so startup/runtime errors stay visible.
+    flags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
     app_port = find_free_port()
     ProxyHandler.app_port = app_port
     app = subprocess.Popen(
@@ -281,8 +320,7 @@ def main() -> int:
         creationflags=flags,
     )
     try:
-        wait_for_port(app_port)
-        server = ThreadingHTTPServer((args.host, args.port), ProxyHandler)
+        wait_for_app(app, app_port)
         address = f"http://127.0.0.1:{args.port}"
         print("元素化学题库已启动：", flush=True)
         for available_address in lan_addresses(args.port):
@@ -293,14 +331,9 @@ def main() -> int:
             server.serve_forever()
         except KeyboardInterrupt:
             pass
-        finally:
-            server.server_close()
     finally:
-        app.terminate()
-        try:
-            app.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            app.kill()
+        server.server_close()
+        stop_process_tree(app)
     return 0
 
 

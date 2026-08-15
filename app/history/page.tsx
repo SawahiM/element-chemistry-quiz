@@ -7,8 +7,9 @@ import ReactMarkdown from "react-markdown";
 import rehypeKatex from "rehype-katex";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
-import { clearHistory, deleteHistoryRecord, loadHistory, type HistoryRecord } from "../history-storage";
+import { clearHistory, deleteHistoryRecord, loadHistory, peekHistory, type HistoryRecord } from "../history-storage";
 import { publicPath } from "../public-path";
+import { loadSessionResource, peekSessionResource } from "../session-cache";
 import { stateBasisLabel, stateContextText, type StateCategory } from "../material-state";
 import "./history.css";
 
@@ -41,13 +42,6 @@ type StoredColorQuestion = {
   evidenceIds: string[];
 };
 type ColorPracticePayload = { question: StoredColorQuestion; selected: string[] };
-type ColorExamPayload = {
-  config: { durationMinutes: number; totalPoints: number; counts: Record<string, number> };
-  questions: StoredColorQuestion[];
-  answers: string[][];
-  startedAt: number;
-  endedAt: number;
-};
 type EquationResponse = { formulas: string[]; knownCoefficients: string[]; answerCoefficients: string[] };
 type EquationReaction = {
   id: string;
@@ -57,13 +51,35 @@ type EquationReaction = {
 };
 type EquationQuestion = { id: string; direction: "forward" | "reverse"; reaction: EquationReaction };
 type EquationPracticePayload = { question: EquationQuestion; response: EquationResponse; requireBalancing: boolean; fixedCount: boolean };
-type EquationExamPayload = {
-  config: { durationMinutes: number; totalPoints: number; forward: number; reverse: number };
-  results: Array<{ question: EquationQuestion; response: EquationResponse; correct: boolean }>;
+type UnifiedExamConfig = {
+  durationMinutes: number;
+  totalPoints: number;
+  counts: Record<string, number>;
   requireBalancing: boolean;
+  fixedCount: boolean;
+};
+type UnifiedExamResult =
+  | { kind: "color"; typeId: string; question: StoredColorQuestion; selected: string[]; correct: boolean }
+  | { kind: "equation"; typeId: string; question: EquationQuestion; response: EquationResponse; correct: boolean };
+type UnifiedExamPayload = {
+  version: 3;
+  unified: true;
+  config: UnifiedExamConfig;
+  results: UnifiedExamResult[];
   startedAt: number;
   endedAt: number;
 };
+
+function isUnifiedExamPayload(value: unknown): value is UnifiedExamPayload {
+  if (!value || typeof value !== "object") return false;
+  const payload = value as Partial<UnifiedExamPayload>;
+  return payload.version === 3
+    && payload.unified === true
+    && Boolean(payload.config)
+    && Array.isArray(payload.results)
+    && typeof payload.startedAt === "number"
+    && typeof payload.endedAt === "number";
+}
 
 function Formula({ value, display = false }: { value: string; display?: boolean }) {
   const html = katex.renderToString(`\\ce{${value}}`, { throwOnError: false, strict: "ignore", output: "html", displayMode: display });
@@ -148,7 +164,7 @@ function EquationQuestionDetails({ payload, correct, index }: { payload: Equatio
       <div className="history-analysis">
         <div className="history-answer-grid">
           <p><span>你的答案</span><b>{equationAnswer(payload)}</b></p>
-          <p className="history-standard-answer"><span>标准方程式</span><StandardEquation reaction={reaction} /></p>
+          <div className="history-answer-panel history-standard-answer"><span>标准方程式</span><StandardEquation reaction={reaction} /></div>
         </div>
         <article className="history-equation-evidence"><b>教材原文</b><MarkdownText>{reaction.source.evidenceText}</MarkdownText><small>{reaction.source.printedPage ? `教材第 ${reaction.source.printedPage} 页` : `PDF 第 ${reaction.source.pdfPage} 页`}</small></article>
       </div>
@@ -156,43 +172,44 @@ function EquationQuestionDetails({ payload, correct, index }: { payload: Equatio
   );
 }
 
+const UNIFIED_TYPE_LABELS: Record<string, string> = {
+  color_of: "物质 → 颜色",
+  which_one_is_color: "颜色 → 单一物质",
+  which_are_color: "颜色 → 多种物质",
+  equation_forward: "反应物 → 产物",
+  equation_reverse: "产物 → 反应物",
+};
+
 function ExamResult({ record, observations }: { record: HistoryRecord; observations: Map<string, Observation> }) {
-  if (record.quizKind === "color") {
-    const payload = record.payload as ColorExamPayload;
-    const results = payload.questions.map((question, index) => ({ question, selected: payload.answers[index] || [] }));
-    const correct = results.filter(({ question, selected }) => selected.length === question.correctIds.length && selected.every((id) => question.correctIds.includes(id))).length;
-    const answered = results.filter((item) => item.selected.length).length;
-    const score = results.length ? Math.round(correct / results.length * payload.config.totalPoints) : 0;
-    const formatLabels: Record<string, string> = { color_of: "物质 → 颜色", which_one_is_color: "颜色 → 单一物质", which_are_color: "颜色 → 多种物质" };
-    const breakdown = Object.keys(payload.config.counts).map((format) => {
-      const matching = results.filter((item) => item.question.format === format);
-      return { format, answered: matching.filter((item) => item.selected.length).length, correct: matching.filter(({ question, selected }) => selected.length === question.correctIds.length && selected.every((id) => question.correctIds.includes(id))).length };
-    });
-    return <div className="history-exam-result"><div className="history-score"><strong>{score}</strong><span>/ {payload.config.totalPoints} 分</span></div><div><h3>{score >= payload.config.totalPoints * .8 ? "掌握得很扎实" : score >= payload.config.totalPoints * .6 ? "基础已经建立" : "建议继续练习"}</h3><p>共作答 {answered} / {results.length} 题，答对 {correct} 题，用时 {duration(Math.floor((payload.endedAt - payload.startedAt) / 1000))}。</p></div><div className="history-result-breakdown">{breakdown.map((item) => <div key={item.format}><span>{formatLabels[item.format] || item.format}</span><b>{item.correct} / {payload.config.counts[item.format]}</b><small>作答 {item.answered} 题</small></div>)}</div><section className="history-exam-review"><h4>整卷解析</h4>{results.map((result, index) => <ColorQuestionDetails key={`${result.question.id}-${index}`} payload={result} observations={observations} index={index} />)}</section></div>;
-  }
-  const payload = record.payload as EquationExamPayload;
+  if (!isUnifiedExamPayload(record.payload)) return null;
+  const payload = record.payload;
   const correct = payload.results.filter((item) => item.correct).length;
-  const answered = payload.results.filter((item) => item.response.formulas.some((value) => value.trim())).length;
+  const answered = payload.results.filter((item) => item.kind === "color" ? item.selected.length > 0 : item.response.formulas.some((value) => value.trim())).length;
   const score = payload.results.length ? Math.round(correct / payload.results.length * payload.config.totalPoints) : 0;
-  return <div className="history-exam-result"><div className="history-score"><strong>{score}</strong><span>/ {payload.config.totalPoints} 分</span></div><div><h3>{score >= payload.config.totalPoints * .8 ? "方程式掌握得很扎实" : "继续巩固反应网络"}</h3><p>共作答 {answered} / {payload.results.length} 题，答对 {correct} 题，用时 {duration(Math.floor((payload.endedAt - payload.startedAt) / 1000))}。</p></div><section className="history-exam-review"><h4>整卷解析</h4>{payload.results.map((result, index) => <EquationQuestionDetails key={`${result.question.id}-${index}`} payload={{ question: result.question, response: result.response, requireBalancing: payload.requireBalancing, fixedCount: true }} correct={result.correct} index={index} />)}</section></div>;
+  const breakdown = Object.keys(UNIFIED_TYPE_LABELS).map((typeId) => {
+    const matching = payload.results.filter((item) => item.typeId === typeId);
+    return { typeId, correct: matching.filter((item) => item.correct).length, answered: matching.filter((item) => item.kind === "color" ? item.selected.length > 0 : item.response.formulas.some((value) => value.trim())).length, total: matching.length };
+  }).filter((item) => item.total > 0);
+  return <div className="history-exam-result"><div className="history-score"><strong>{score}</strong><span>/ {payload.config.totalPoints} 分</span></div><div><h3>{score >= payload.config.totalPoints * .8 ? "掌握得很扎实" : score >= payload.config.totalPoints * .6 ? "基础已经建立" : "建议继续巩固"}</h3><p>共作答 {answered} / {payload.results.length} 题，答对 {correct} 题，用时 {duration(Math.floor((payload.endedAt - payload.startedAt) / 1000))}。</p></div><div className="history-result-breakdown">{breakdown.map((item) => <div key={item.typeId}><span>{UNIFIED_TYPE_LABELS[item.typeId]}</span><b>{item.correct} / {item.total}</b><small>作答 {item.answered} 题</small></div>)}</div><section className="history-exam-review"><h4>整卷解析</h4>{payload.results.map((result, index) => result.kind === "color" ? <ColorQuestionDetails key={`${result.question.id}-${index}`} payload={{ question: result.question, selected: result.selected }} observations={observations} index={index} /> : <EquationQuestionDetails key={`${result.question.id}-${index}`} payload={{ question: result.question, response: result.response, requireBalancing: payload.config.requireBalancing, fixedCount: payload.config.fixedCount }} correct={result.correct} index={index} />)}</section></div>;
 }
 
 export default function HistoryPage() {
+  const cachedHistory = peekHistory();
   const [tab, setTab] = useState<Tab>("exams");
-  const [records, setRecords] = useState<HistoryRecord[]>([]);
-  const [materials, setMaterials] = useState<Materials | null>(null);
+  const [records, setRecords] = useState<HistoryRecord[]>(() => cachedHistory ?? []);
+  const [materials, setMaterials] = useState<Materials | null>(() => peekSessionResource(publicPath("/materials.v1.json")));
   const [error, setError] = useState("");
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(cachedHistory === undefined);
 
   useEffect(() => {
     Promise.all([
       loadHistory(),
-      fetch(publicPath("/materials.v1.json")).then((response) => response.ok ? response.json() as Promise<Materials> : Promise.reject(new Error("题库加载失败"))),
+      loadSessionResource<Materials>(publicPath("/materials.v1.json"), "题库加载失败"),
     ]).then(([history, data]) => { setRecords(history); setMaterials(data); }).catch((reason) => setError(reason instanceof Error ? reason.message : "历史记录加载失败")).finally(() => setLoading(false));
   }, []);
 
   const observations = useMemo(() => new Map((materials?.observations || []).map((item) => [item.id, item])), [materials]);
-  const exams = records.filter((item) => item.recordType === "exam");
+  const exams = records.filter((item) => item.recordType === "exam" && item.quizKind === "unified" && isUnifiedExamPayload(item.payload));
   const practice = records.filter((item) => item.recordType === "practice" && item.source === "practice");
   const wrong = records.filter((item) => item.recordType === "practice" && item.correct === false);
   const visible = tab === "exams" ? exams : tab === "practice" ? practice : wrong;
@@ -212,15 +229,15 @@ export default function HistoryPage() {
 
   return (
     <main className="history-page">
-      <header className="history-topbar"><a href={publicPath("/")} className="history-back">← 返回题库</a><div><span>PERSONAL ARCHIVE</span><h1>历史记录</h1><p>考试、练习和需要再次巩固的题目都在这里。</p></div></header>
+      <header className="history-hero"><span>PERSONAL ARCHIVE</span><h1>历史记录</h1><p>考试、练习和需要再次巩固的题目都在这里。</p></header>
       <div className="history-tab-row"><nav className="history-tabs" aria-label="历史记录分类">{([
         ["exams", "考试记录", exams.length], ["practice", "做题记录", practice.length], ["wrong", "错题整理", wrong.length],
       ] as Array<[Tab, string, number]>).map(([value, label, count]) => <button className={tab === value ? "active" : ""} onClick={() => setTab(value)} key={value}><span>{label}</span><b>{count}</b></button>)}</nav><button className="history-clear" type="button" onClick={clearAll} disabled={!records.length}>清空</button></div>
       {error ? <p className="history-error">{error}</p> : null}
-      {loading ? <section className="history-empty"><span className="auth-loader" /><p>正在整理账户记录…</p></section> : !visible.length ? <section className="history-empty"><b>{tab === "wrong" ? "暂时没有错题" : "还没有记录"}</b><p>{tab === "exams" ? "完成一场考试后，结果会自动保存在这里。" : "确认答案后，题目会立即写入你的账户。"}</p><a href={publicPath("/")}>开始做题</a></section> : <section className={`history-list ${tab === "exams" ? "history-exam-list" : "history-question-grid"}`}>{visible.map((record) => (
+      {loading ? <section className="history-empty"><span className="auth-loader" /><p>正在整理账户记录…</p></section> : !visible.length ? <section className="history-empty"><b>{tab === "wrong" ? "暂时没有错题" : "还没有记录"}</b><p>{tab === "exams" ? "完成一场考试后，结果会自动保存在这里。" : "确认答案后，题目会立即写入你的账户。"}</p></section> : <section className={`history-list ${tab === "exams" ? "history-exam-list" : "history-question-grid"}`}>{visible.map((record) => (
         <article className="history-record" key={record.id}>
-          <div className="history-record-meta"><span>{record.quizKind === "color" ? "颜色" : "方程式"}{record.recordType === "exam" ? "考试" : record.source === "exam" ? "考试错题" : "练习"}</span><time>{dateLabel(record.createdAt)}</time><button onClick={() => remove(record.id)} aria-label="删除这条记录">删除</button></div>
-          {record.recordType === "exam" ? <details className="history-exam"><summary><span>{record.quizKind === "color" ? "颜色知识考试" : "化学方程式考试"}</span><b>查看考试结果</b></summary><ExamResult record={record} observations={observations} /></details> : record.quizKind === "color" ? <ColorQuestionDetails payload={record.payload as ColorPracticePayload} observations={observations} /> : <EquationQuestionDetails payload={record.payload as EquationPracticePayload} correct={record.correct === true} />}
+          <div className="history-record-meta"><span>{record.recordType === "exam" ? "综合考试" : `${record.quizKind === "color" ? "颜色" : "方程式"}${record.source === "exam" ? "考试错题" : "练习"}`}</span><time>{dateLabel(record.createdAt)}</time><button onClick={() => remove(record.id)} aria-label="删除这条记录">删除</button></div>
+          {record.recordType === "exam" ? <details className="history-exam"><summary><span>颜色与方程式综合考试</span><b>查看考试结果</b></summary><ExamResult record={record} observations={observations} /></details> : record.quizKind === "color" ? <ColorQuestionDetails payload={record.payload as ColorPracticePayload} observations={observations} /> : record.quizKind === "equation" ? <EquationQuestionDetails payload={record.payload as EquationPracticePayload} correct={record.correct === true} /> : null}
         </article>
       ))}</section>}
     </main>

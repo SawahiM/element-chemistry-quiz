@@ -1,12 +1,20 @@
 "use client";
 
-import type { ReactNode } from "react";
+import Link from "next/link";
+import { usePathname } from "next/navigation";
 
-type PracticeArea = "colors" | "equations" | "paper";
+type PracticeArea = "color" | "equation" | "paper" | "test";
 
-export function ChemistryMark({ compact = false }: { compact?: boolean }) {
+const MODES: Array<{ mode: PracticeArea; label: string }> = [
+  { mode: "color", label: "颜色练习" },
+  { mode: "equation", label: "方程式练习" },
+  { mode: "paper", label: "试卷模式" },
+  { mode: "test", label: "考试模式" },
+];
+
+export function ChemistryMark() {
   return (
-    <span className={compact ? "brand-mark compact" : "brand-mark"} aria-hidden="true">
+    <span className="brand-mark" aria-hidden="true">
       <svg viewBox="0 0 48 48" role="img">
         <path d="M18 7h12M21 7v10L11 35.5A4 4 0 0 0 14.5 41h19a4 4 0 0 0 3.5-5.5L27 17V7" />
         <path className="brand-mark-liquid" d="M14.5 34h19" />
@@ -17,23 +25,23 @@ export function ChemistryMark({ compact = false }: { compact?: boolean }) {
   );
 }
 
-export function PracticeBrand({ compact = false }: { compact?: boolean }) {
+export function PracticeBrand() {
   return (
-    <div className={compact ? "brand compact" : "brand"}>
-      <ChemistryMark compact={compact} />
-      <div>
+    <Link href="/color" className="brand brand-link" aria-label="返回颜色练习">
+      <ChemistryMark />
+      <span>
         <strong>无机化学基础知识练习</strong>
-        {!compact ? <small>颜色性质 · 反应方程式 · 综合测试</small> : null}
-      </div>
-    </div>
+        <small>颜色性质 · 反应方程式 · 综合测试</small>
+      </span>
+    </Link>
   );
 }
 
-function ModeGlyph({ mode }: { mode: PracticeArea | "exam" }) {
-  if (mode === "colors") {
+function ModeGlyph({ mode }: { mode: PracticeArea }) {
+  if (mode === "color") {
     return <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="7" cy="7" r="3" /><circle cx="13" cy="7" r="3" /><circle cx="10" cy="12.5" r="3" /></svg>;
   }
-  if (mode === "equations") {
+  if (mode === "equation") {
     return <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M2.5 6h5M12.5 6h5M4 14h12M10 3.5v5M10 11.5v5" /></svg>;
   }
   if (mode === "paper") {
@@ -42,42 +50,28 @@ function ModeGlyph({ mode }: { mode: PracticeArea | "exam" }) {
   return <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 2.5v2M10 15.5v2M2.5 10h2M15.5 10h2M4.7 4.7l1.4 1.4M13.9 13.9l1.4 1.4M15.3 4.7l-1.4 1.4M6.1 13.9l-1.4 1.4" /><circle cx="10" cy="10" r="4" /></svg>;
 }
 
-export function PracticeNavigation({
-  active,
-  onColors,
-  onEquations,
-  onPaper,
-  onExam,
-  examActive = false,
-  examDisabled = false,
-}: {
-  active: PracticeArea;
-  onColors?: () => void;
-  onEquations?: () => void;
-  onPaper?: () => void;
-  onExam?: () => void;
-  examActive?: boolean;
-  examDisabled?: boolean;
-}) {
-  const item = (mode: PracticeArea, label: string, onClick?: () => void) => (
-    <button className={active === mode ? "active" : ""} onClick={onClick} disabled={!onClick} aria-current={active === mode ? "page" : undefined}>
-      <span className="mode-glyph"><ModeGlyph mode={mode} /></span><b>{label}</b>
-    </button>
-  );
+export function PracticeNavigation() {
+  const pathname = usePathname();
   return (
     <nav className="practice-nav" aria-label="练习模式">
-      {item("colors", "颜色练习", onColors)}
-      {item("equations", "方程式练习", onEquations)}
-      {item("paper", "试卷模式", onPaper)}
-      {onExam ? (
-        <button className={examActive ? "active exam-mode" : "exam-mode"} onClick={onExam} disabled={examDisabled}>
-          <span className="mode-glyph"><ModeGlyph mode="exam" /></span><b>考试模式</b>
-        </button>
-      ) : null}
+      {MODES.map(({ mode, label }) => {
+        const href = `/${mode}`;
+        const active = pathname === href || pathname.startsWith(`${href}/`);
+        return (
+          <Link href={href} className={active ? "active" : ""} aria-current={active ? "page" : undefined} key={mode}>
+            <span className="mode-glyph"><ModeGlyph mode={mode} /></span><b>{label}</b>
+          </Link>
+        );
+      })}
     </nav>
   );
 }
 
-export function PracticeHeader({ brandCompact = false, children }: { brandCompact?: boolean; children: ReactNode }) {
-  return <header className="topbar"><PracticeBrand compact={brandCompact} /><div className="topbar-actions">{children}</div></header>;
+export function AppHeader() {
+  return (
+    <header className="topbar">
+      <PracticeBrand />
+      <div className="topbar-actions"><PracticeNavigation /></div>
+    </header>
+  );
 }

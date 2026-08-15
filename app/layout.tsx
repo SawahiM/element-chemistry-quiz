@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import "katex/dist/katex.min.css";
 import "./globals.css";
 import AuthGate from "./auth-gate";
+import { AppHeader } from "./practice-header";
 
 export const dynamic = "force-static";
 
@@ -26,7 +27,7 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
     <html lang="zh-CN">
-      <body><AuthGate>{children}</AuthGate></body>
+      <body><AuthGate><div className="authenticated-app"><AppHeader />{children}</div></AuthGate></body>
     </html>
   );
 }

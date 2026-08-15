@@ -3,16 +3,29 @@
 export const dynamic = "force-static";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import katex from "katex";
 import "katex/contrib/mhchem";
 import ReactMarkdown from "react-markdown";
 import rehypeKatex from "rehype-katex";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
-import EquationQuiz from "./equation-quiz";
+import EquationQuiz, {
+  EquationExamQuestion,
+  EquationExamReviewCard,
+  blankResponse,
+  exact as equationAnswerIsExact,
+  questionFor as generateEquationQuestion,
+  validReactions,
+  type Direction as EquationDirection,
+  type EquationQuestion,
+  type EquationResponse,
+  type ReactionDataset,
+} from "./equation-quiz";
 import PaperMode from "./paper-mode";
-import { PracticeHeader, PracticeNavigation } from "./practice-header";
+import { ALL_ELEMENTS, ElementScopePicker } from "./element-scope-picker";
 import { publicPath } from "./public-path";
+import { loadSessionResource, peekSessionResource } from "./session-cache";
 import { forbiddenColorPair, takeWithFinalColorCheck, takeWithFinalConflictCheck } from "./question-policy";
 import {
   acceptedColorIds as acceptedIdsFor,
@@ -895,9 +908,9 @@ function formatDuration(totalSeconds: number): string {
   return `${String(Math.floor(seconds / 60)).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`;
 }
 
-function ColorQuiz({ onSwitchToEquations, onSwitchToPaper }: { onSwitchToEquations: () => void; onSwitchToPaper: () => void }) {
-  const [data, setData] = useState<Materials | null>(null);
-  const [formatLanguage, setFormatLanguage] = useState<FormatLanguage | null>(null);
+function ColorQuiz() {
+  const [data, setData] = useState<Materials | null>(() => peekSessionResource(publicPath("/materials.v1.json")));
+  const [formatLanguage, setFormatLanguage] = useState<FormatLanguage | null>(() => peekSessionResource(publicPath("/question-formats.cqf.json")));
   const [format, setFormat] = useState<GeneratedQuestion["format"]>("color_of");
   const [question, setQuestion] = useState<GeneratedQuestion | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -926,15 +939,11 @@ function ColorQuiz({ onSwitchToEquations, onSwitchToPaper }: { onSwitchToEquatio
 
   useEffect(() => {
     Promise.all([
-      fetch(publicPath("/materials.v1.json")),
-      fetch(publicPath("/question-formats.cqf.json")),
+      loadSessionResource<Materials>(publicPath("/materials.v1.json"), "物质库载入失败"),
+      loadSessionResource<FormatLanguage>(publicPath("/question-formats.cqf.json"), "题目格式载入失败"),
       loadAccountData<StoredSession>(SESSION_STORAGE_KEY),
       loadPracticeHistory("color"),
     ])
-      .then(async ([dataResponse, formatResponse, savedSession, historyRecords]) => {
-        if (!dataResponse.ok || !formatResponse.ok) throw new Error("物质库或题目格式载入失败");
-        return [await dataResponse.json(), await formatResponse.json(), savedSession, historyRecords] as [Materials, FormatLanguage, StoredSession | null, HistoryRecord[]];
-      })
       .then(([payload, language, saved, historyRecords]) => {
         setData(payload);
         setFormatLanguage(language);
@@ -1050,32 +1059,15 @@ function ColorQuiz({ onSwitchToEquations, onSwitchToPaper }: { onSwitchToEquatio
       Math.max(0, examItems.length - 1),
       Math.max(0, pendingRestore.examIndex),
     );
-    let restoredMode = pendingRestore.appMode;
-    if ((restoredMode === "exam_running" || restoredMode === "exam_result") && !examItems.length) {
-      restoredMode = "practice";
-    }
-    let restoredRemaining = 0;
-    let restoredStartedAt = pendingRestore.examStartedAt;
-    let restoredEndedAt = pendingRestore.examEndedAt;
-    if (restoredMode === "exam_running") {
-      const startedAt = pendingRestore.examStartedAt || Date.now();
-      restoredStartedAt = startedAt;
-      const elapsed = Math.floor((Date.now() - startedAt) / 1000);
-      restoredRemaining = Math.max(0, pendingRestore.examConfig.durationMinutes * 60 - elapsed);
-      if (restoredRemaining === 0) {
-        restoredMode = "exam_result";
-        restoredEndedAt = Date.now();
-      }
-    }
+    const restoredMode: AppMode = "practice";
+    const restoredRemaining = 0;
+    const restoredStartedAt = null;
+    const restoredEndedAt = null;
     const activePractice = restoredPracticeIndex === practiceEntries.length && restoredDraft
       ? restoredDraft
       : practiceEntries[restoredPracticeIndex] || restoredDraft!;
-    const activeExam = examItems[restoredExamIndex];
-    const showExam = restoredMode === "exam_running" || restoredMode === "exam_result";
-    const activeQuestion = showExam && activeExam ? activeExam : activePractice.question;
-    const activeSelected = showExam && activeExam
-      ? answers[restoredExamIndex] || new Set<string>()
-      : activePractice.selected;
+    const activeQuestion = activePractice.question;
+    const activeSelected = activePractice.selected;
     let restoredScope = new Set(
       (pendingRestore.elementScope || ALLOWED_ELEMENTS)
         .filter((symbol) => DEFAULT_ELEMENT_SCOPE.has(symbol)),
@@ -1107,7 +1099,9 @@ function ColorQuiz({ onSwitchToEquations, onSwitchToPaper }: { onSwitchToEquatio
   }, [data, pendingRestore, startFreshSession]);
 
   useEffect(() => {
-    if (data && formatLanguage && pendingRestore) restoreSavedSession();
+    if (!data || !formatLanguage || !pendingRestore) return;
+    const timer = window.setTimeout(restoreSavedSession, 0);
+    return () => window.clearTimeout(timer);
   }, [data, formatLanguage, pendingRestore, restoreSavedSession]);
 
   useEffect(() => {
@@ -1228,18 +1222,6 @@ function ColorQuiz({ onSwitchToEquations, onSwitchToPaper }: { onSwitchToEquatio
     }
     createPracticeQuestion(format);
   }, [appMode, createPracticeQuestion, examIndex, examQuestions.length, format, practiceDraft, practiceHistory.length, practiceIndex, showExamQuestion, showPracticeDraft, showPracticeEntry]);
-
-  const showCurrentPractice = useCallback(() => {
-    if (practiceIndex < practiceHistory.length) {
-      showPracticeEntry(practiceIndex);
-    } else if (practiceDraft) {
-      showPracticeDraft();
-    } else if (practiceHistory.length) {
-      showPracticeEntry(practiceHistory.length - 1);
-    } else {
-      createPracticeQuestion("color_of");
-    }
-  }, [createPracticeQuestion, practiceDraft, practiceHistory.length, practiceIndex, showPracticeDraft, showPracticeEntry]);
 
   const changeFormat = (value: GeneratedQuestion["format"]) => {
     createPracticeQuestion(value);
@@ -1382,7 +1364,9 @@ function ColorQuiz({ onSwitchToEquations, onSwitchToPaper }: { onSwitchToEquatio
   }, [appMode, examConfig.durationMinutes, examStartedAt]);
 
   useEffect(() => {
-    if (appMode === "exam_running" && examStartedAt !== null && remainingSeconds === 0) finishExam();
+    if (appMode !== "exam_running" || examStartedAt === null || remainingSeconds !== 0) return;
+    const timer = window.setTimeout(finishExam, 0);
+    return () => window.clearTimeout(timer);
   }, [appMode, examStartedAt, finishExam, remainingSeconds]);
 
   const toggleChoice = (id: string) => {
@@ -1502,10 +1486,7 @@ function ColorQuiz({ onSwitchToEquations, onSwitchToPaper }: { onSwitchToEquatio
   const examScore = examTotal ? Math.round((examCorrect / examTotal) * examConfig.totalPoints) : 0;
   const examUsedSeconds = examStartedAt === null
     ? 0
-    : Math.min(
-        examConfig.durationMinutes * 60,
-        Math.floor(((examEndedAt ?? Date.now()) - examStartedAt) / 1000),
-      );
+    : Math.max(0, examConfig.durationMinutes * 60 - remainingSeconds);
   const elementScopeControl = (
     <section className="element-scope-control">
       <div>
@@ -1523,22 +1504,6 @@ function ColorQuiz({ onSwitchToEquations, onSwitchToPaper }: { onSwitchToEquatio
 
   return (
     <main className="app-shell">
-      <PracticeHeader>
-          <PracticeNavigation
-            active="colors"
-            onEquations={onSwitchToEquations}
-            onPaper={appMode === "exam_running" ? undefined : onSwitchToPaper}
-            onExam={() => setAppMode("exam_setup")}
-            examActive={appMode !== "practice"}
-            examDisabled={appMode === "exam_running"}
-          />
-          {appMode === "exam_running" ? (
-            <div className={remainingSeconds <= 60 ? "exam-clock urgent" : "exam-clock"}>
-              <span>考试倒计时</span><b>{formatDuration(remainingSeconds)}</b>
-            </div>
-          ) : null}
-      </PracticeHeader>
-
       {scopeEditorOpen ? (
         <div
           className="scope-modal-backdrop"
@@ -1679,7 +1644,6 @@ function ColorQuiz({ onSwitchToEquations, onSwitchToPaper }: { onSwitchToEquatio
           {elementScopeControl}
           <div className="exam-summary"><span>共 <b>{examTotal}</b> 题</span><span>限时 <b>{examConfig.durationMinutes}</b> 分钟</span><span>满分 <b>{examConfig.totalPoints}</b> 分</span></div>
           <div className="exam-screen-actions">
-            <button className="skip-action" onClick={() => { setAppMode("practice"); showCurrentPractice(); }}>返回练习</button>
             <button className="primary-action" disabled={examTotal < 1} onClick={startExam}>开始考试</button>
           </div>
         </section>
@@ -1715,7 +1679,6 @@ function ColorQuiz({ onSwitchToEquations, onSwitchToPaper }: { onSwitchToEquatio
             ))}
           </section>
           <div className="exam-screen-actions">
-            <button className="skip-action" onClick={() => { setAppMode("practice"); showCurrentPractice(); }}>返回练习</button>
             <button className="primary-action" onClick={() => setAppMode("exam_setup")}>再考一次</button>
           </div>
         </section>
@@ -1887,12 +1850,374 @@ function ColorQuiz({ onSwitchToEquations, onSwitchToPaper }: { onSwitchToEquatio
   );
 }
 
-export default function Home() {
-  const [quizBank, setQuizBank] = useState<"color" | "equation" | "paper">("color");
-  if (quizBank === "paper") {
-    return <PaperMode onSwitchToColors={() => setQuizBank("color")} onSwitchToEquations={() => setQuizBank("equation")} />;
+type UnifiedExamTypeId = QuestionFormat | "equation_forward" | "equation_reverse";
+type UnifiedExamMode = "setup" | "running" | "result";
+type UnifiedColorItem = { kind: "color"; typeId: QuestionFormat; question: GeneratedQuestion; selected: Set<string> };
+type UnifiedEquationItem = { kind: "equation"; typeId: "equation_forward" | "equation_reverse"; question: EquationQuestion; response: EquationResponse };
+type UnifiedExamItem = UnifiedColorItem | UnifiedEquationItem;
+type UnifiedExamConfig = {
+  durationMinutes: number;
+  totalPoints: number;
+  requireBalancing: boolean;
+  fixedCount: boolean;
+  counts: Record<UnifiedExamTypeId, number>;
+};
+type StoredUnifiedExamItem =
+  | { kind: "color"; typeId: QuestionFormat; question: StoredQuestion; selected: string[] }
+  | { kind: "equation"; typeId: "equation_forward" | "equation_reverse"; reactionId: string; direction: EquationDirection; response: EquationResponse };
+type StoredUnifiedExamSession = {
+  version: 1;
+  mode: UnifiedExamMode;
+  config: UnifiedExamConfig;
+  scope: string[];
+  items: StoredUnifiedExamItem[];
+  index: number;
+  startedAt: number | null;
+  endedAt: number | null;
+  lastResult?: {
+    config: UnifiedExamConfig;
+    items: StoredUnifiedExamItem[];
+    startedAt: number;
+    endedAt: number;
+  };
+};
+type UnifiedExamResultSnapshot = { config: UnifiedExamConfig; items: UnifiedExamItem[]; startedAt: number; endedAt: number };
+type UnifiedExamContext = {
+  materials: Materials;
+  language: FormatLanguage;
+  reactions: ReactionDataset;
+  scope: Set<string>;
+  fixedCount: boolean;
+};
+type UnifiedExamTypeAdapter = {
+  id: UnifiedExamTypeId;
+  group: "颜色性质" | "反应方程式";
+  label: string;
+  description: string;
+  defaultCount: number;
+  generate: (context: UnifiedExamContext, previous?: UnifiedExamItem) => UnifiedExamItem;
+};
+
+const UNIFIED_EXAM_TYPE_REGISTRY: UnifiedExamTypeAdapter[] = [
+  {
+    id: "color_of", group: "颜色性质", label: "根据物质选择颜色", description: "单项选择", defaultCount: 4,
+    generate: (context, previous) => ({ kind: "color", typeId: "color_of", question: generateScopedQuestion(context.materials, context.language, "color_of", context.scope, previous?.kind === "color" ? previous.question : undefined), selected: new Set() }),
+  },
+  {
+    id: "which_one_is_color", group: "颜色性质", label: "根据颜色选择物质", description: "单项选择", defaultCount: 3,
+    generate: (context, previous) => ({ kind: "color", typeId: "which_one_is_color", question: generateScopedQuestion(context.materials, context.language, "which_one_is_color", context.scope, previous?.kind === "color" ? previous.question : undefined), selected: new Set() }),
+  },
+  {
+    id: "which_are_color", group: "颜色性质", label: "根据颜色选择所有物质", description: "多项选择", defaultCount: 3,
+    generate: (context, previous) => ({ kind: "color", typeId: "which_are_color", question: generateScopedQuestion(context.materials, context.language, "which_are_color", context.scope, previous?.kind === "color" ? previous.question : undefined), selected: new Set() }),
+  },
+  {
+    id: "equation_forward", group: "反应方程式", label: "反应物＋条件 → 产物", description: "正向完成方程式", defaultCount: 5,
+    generate: (context, previous) => {
+      const pool = validReactions(context.reactions, context.scope);
+      const question = generateEquationQuestion(pool, "forward", previous?.kind === "equation" ? previous.question.reaction.id : undefined);
+      return { kind: "equation", typeId: "equation_forward", question, response: blankResponse(question, context.fixedCount) };
+    },
+  },
+  {
+    id: "equation_reverse", group: "反应方程式", label: "产物＋条件 → 反应物", description: "逆向倒推方程式", defaultCount: 5,
+    generate: (context, previous) => {
+      const pool = validReactions(context.reactions, context.scope);
+      const question = generateEquationQuestion(pool, "reverse", previous?.kind === "equation" ? previous.question.reaction.id : undefined);
+      return { kind: "equation", typeId: "equation_reverse", question, response: blankResponse(question, context.fixedCount) };
+    },
+  },
+];
+
+const DEFAULT_UNIFIED_EXAM_CONFIG: UnifiedExamConfig = {
+  durationMinutes: 30,
+  totalPoints: 100,
+  requireBalancing: true,
+  fixedCount: true,
+  counts: Object.fromEntries(UNIFIED_EXAM_TYPE_REGISTRY.map((type) => [type.id, type.defaultCount])) as Record<UnifiedExamTypeId, number>,
+};
+const UNIFIED_EXAM_SESSION_KEY = "element-chemistry-unified-exam-v1";
+
+function serializeUnifiedExamItem(item: UnifiedExamItem): StoredUnifiedExamItem {
+  return item.kind === "color"
+    ? { kind: "color", typeId: item.typeId, question: serializeQuestion(item.question), selected: [...item.selected] }
+    : { kind: "equation", typeId: item.typeId, reactionId: item.question.reaction.id, direction: item.question.direction, response: item.response };
+}
+
+function restoreUnifiedExamItem(item: StoredUnifiedExamItem, materials: Materials, reactions: ReactionDataset): UnifiedExamItem | null {
+  if (item.kind === "color") {
+    const question = restoreQuestion(item.question, materials);
+    return question ? { kind: "color", typeId: item.typeId, question, selected: new Set(item.selected) } : null;
   }
-  return quizBank === "color"
-    ? <ColorQuiz onSwitchToEquations={() => setQuizBank("equation")} onSwitchToPaper={() => setQuizBank("paper")} />
-    : <EquationQuiz onSwitchToColors={() => setQuizBank("color")} onSwitchToPaper={() => setQuizBank("paper")} />;
+  const reaction = reactions.reactions.find((candidate) => candidate.id === item.reactionId);
+  return reaction ? { kind: "equation", typeId: item.typeId, question: { id: `${item.direction}-${reaction.id}-restored`, reaction, direction: item.direction }, response: item.response } : null;
+}
+
+function unifiedItemAnswered(item: UnifiedExamItem): boolean {
+  if (item.kind === "color") return item.selected.size > 0;
+  return item.response.formulas.some((value) => value.trim())
+    || item.response.knownCoefficients.some((value) => value.trim())
+    || item.response.answerCoefficients.some((value) => value.trim());
+}
+
+function unifiedItemCorrect(item: UnifiedExamItem, requireBalancing: boolean): boolean {
+  return item.kind === "color"
+    ? answerIsExact(item.question, item.selected)
+    : equationAnswerIsExact(item.question, item.response, requireBalancing);
+}
+
+function UnifiedTest({ resultRoute = false }: { resultRoute?: boolean }) {
+  const router = useRouter();
+  const [materials, setMaterials] = useState<Materials | null>(() => peekSessionResource(publicPath("/materials.v1.json")));
+  const [language, setLanguage] = useState<FormatLanguage | null>(() => peekSessionResource(publicPath("/question-formats.cqf.json")));
+  const [reactions, setReactions] = useState<ReactionDataset | null>(() => peekSessionResource(publicPath("/reactions.quiz.v1.json")));
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [generationError, setGenerationError] = useState<string | null>(null);
+  const [mode, setMode] = useState<UnifiedExamMode>("setup");
+  const [config, setConfig] = useState<UnifiedExamConfig>(DEFAULT_UNIFIED_EXAM_CONFIG);
+  const [scope, setScope] = useState<Set<string>>(() => new Set(ALL_ELEMENTS));
+  const [items, setItems] = useState<UnifiedExamItem[]>([]);
+  const [index, setIndex] = useState(0);
+  const [startedAt, setStartedAt] = useState<number | null>(null);
+  const [endedAt, setEndedAt] = useState<number | null>(null);
+  const [lastResult, setLastResult] = useState<UnifiedExamResultSnapshot | null>(null);
+  const [remainingSeconds, setRemainingSeconds] = useState(0);
+  const [storageReady, setStorageReady] = useState(false);
+  const savedStartRef = useRef<number | null>(null);
+  const restoredRef = useRef(false);
+
+  useEffect(() => {
+    let active = true;
+    Promise.all([
+      loadSessionResource<Materials>(publicPath("/materials.v1.json"), "物质库载入失败"),
+      loadSessionResource<FormatLanguage>(publicPath("/question-formats.cqf.json"), "题目格式载入失败"),
+      loadSessionResource<ReactionDataset>(publicPath("/reactions.quiz.v1.json"), "方程式题库载入失败"),
+    ]).then(([nextMaterials, nextLanguage, nextReactions]) => {
+      if (!active) return;
+      setMaterials(nextMaterials);
+      setLanguage(nextLanguage);
+      setReactions(nextReactions);
+    }).catch((error) => {
+      if (active) setLoadError(error instanceof Error ? error.message : "考试题库加载失败");
+    });
+    return () => { active = false; };
+  }, []);
+
+  useEffect(() => {
+    if (!materials || !reactions || restoredRef.current) return;
+    restoredRef.current = true;
+    void loadAccountData<StoredUnifiedExamSession>(UNIFIED_EXAM_SESSION_KEY).then((stored) => {
+      if (!stored || stored.version !== 1) return;
+      const restoredItems = stored.items.map((item) => restoreUnifiedExamItem(item, materials, reactions));
+      if (restoredItems.some((item) => item === null)) return;
+      const nextItems = restoredItems as UnifiedExamItem[];
+      const nextScope = new Set(stored.scope.filter((symbol) => ALL_ELEMENTS.includes(symbol)));
+      const nextMode = stored.mode === "running" && (!stored.startedAt || !nextItems.length) ? "setup" : stored.mode;
+      const restoredConfig: UnifiedExamConfig = {
+        ...DEFAULT_UNIFIED_EXAM_CONFIG,
+        ...stored.config,
+        counts: { ...DEFAULT_UNIFIED_EXAM_CONFIG.counts, ...stored.config.counts },
+      };
+      const elapsed = stored.startedAt ? Math.floor(((stored.endedAt ?? Date.now()) - stored.startedAt) / 1000) : 0;
+      const remaining = Math.max(0, restoredConfig.durationMinutes * 60 - elapsed);
+      const restoredLastItems = stored.lastResult?.items.map((item) => restoreUnifiedExamItem(item, materials, reactions));
+      const restoredLastResult = stored.lastResult
+        && restoredLastItems
+        && !restoredLastItems.some((item) => item === null)
+        ? {
+            config: { ...DEFAULT_UNIFIED_EXAM_CONFIG, ...stored.lastResult.config, counts: { ...DEFAULT_UNIFIED_EXAM_CONFIG.counts, ...stored.lastResult.config.counts } },
+            items: restoredLastItems as UnifiedExamItem[],
+            startedAt: stored.lastResult.startedAt,
+            endedAt: stored.lastResult.endedAt,
+          }
+        : stored.mode === "result" && stored.startedAt !== null && stored.endedAt !== null && nextItems.length
+          ? { config: restoredConfig, items: nextItems, startedAt: stored.startedAt, endedAt: stored.endedAt }
+          : null;
+      setConfig(restoredConfig);
+      setScope(nextScope.size ? nextScope : new Set(ALL_ELEMENTS));
+      setItems(nextItems);
+      setIndex(Math.min(Math.max(0, nextItems.length - 1), Math.max(0, stored.index)));
+      setStartedAt(stored.startedAt);
+      setEndedAt(stored.endedAt);
+      setLastResult(restoredLastResult);
+      setRemainingSeconds(remaining);
+      if (resultRoute) {
+        if (restoredLastResult) setMode("result");
+        else router.replace(publicPath("/test"));
+      } else {
+        setMode(nextMode === "result" ? "setup" : nextMode === "running" && remaining === 0 ? "result" : nextMode);
+      }
+    }).catch(() => undefined).finally(() => setStorageReady(true));
+  }, [materials, reactions, resultRoute, router]);
+
+  useEffect(() => {
+    if (!storageReady) return;
+    const timer = window.setTimeout(() => {
+      void saveAccountData(UNIFIED_EXAM_SESSION_KEY, {
+        version: 1,
+        mode,
+        config,
+        scope: [...scope],
+        items: items.map(serializeUnifiedExamItem),
+        index,
+        startedAt,
+        endedAt,
+        lastResult: lastResult ? {
+          config: lastResult.config,
+          items: lastResult.items.map(serializeUnifiedExamItem),
+          startedAt: lastResult.startedAt,
+          endedAt: lastResult.endedAt,
+        } : undefined,
+      } satisfies StoredUnifiedExamSession);
+    }, 150);
+    return () => window.clearTimeout(timer);
+  }, [config, endedAt, index, items, lastResult, mode, scope, startedAt, storageReady]);
+
+  const total = UNIFIED_EXAM_TYPE_REGISTRY.reduce((sum, type) => sum + config.counts[type.id], 0);
+  const finishExam = useCallback(() => {
+    const finishedAt = Date.now();
+    setEndedAt(finishedAt);
+    const resultSnapshot = startedAt !== null ? { config, items, startedAt, endedAt: finishedAt } : null;
+    if (resultSnapshot) setLastResult(resultSnapshot);
+    setMode("result");
+    if (resultSnapshot) {
+      void saveAccountData(UNIFIED_EXAM_SESSION_KEY, {
+        version: 1,
+        mode: "result",
+        config,
+        scope: [...scope],
+        items: items.map(serializeUnifiedExamItem),
+        index,
+        startedAt,
+        endedAt: finishedAt,
+        lastResult: {
+          config,
+          items: items.map(serializeUnifiedExamItem),
+          startedAt: resultSnapshot.startedAt,
+          endedAt: finishedAt,
+        },
+      } satisfies StoredUnifiedExamSession);
+      router.push(publicPath("/test/result"));
+    }
+    if (startedAt === null || savedStartRef.current === startedAt) return;
+    savedStartRef.current = startedAt;
+    const createdAt = Math.floor(finishedAt / 1000);
+    const colorResults = items.filter((item): item is UnifiedColorItem => item.kind === "color");
+    const equationResults = items.filter((item): item is UnifiedEquationItem => item.kind === "equation");
+    const records = [
+      { clientKey: `unified-exam-${startedAt}`, recordType: "exam" as const, quizKind: "unified" as const, source: "exam" as const, payload: { version: 3, unified: true, config, startedAt, endedAt: finishedAt, results: items.map((item) => item.kind === "color" ? { kind: "color" as const, typeId: item.typeId, question: serializeQuestion(item.question), selected: [...item.selected], correct: answerIsExact(item.question, item.selected) } : { kind: "equation" as const, typeId: item.typeId, question: item.question, response: item.response, correct: equationAnswerIsExact(item.question, item.response, config.requireBalancing) }) }, createdAt },
+      ...colorResults.map((item, itemIndex) => ({ clientKey: `unified-color-question-${startedAt}-${itemIndex}`, recordType: "practice" as const, quizKind: "color" as const, source: "exam" as const, correct: answerIsExact(item.question, item.selected), payload: { version: 2, question: serializeQuestion(item.question), selected: [...item.selected] }, createdAt })),
+      ...equationResults.map((item, itemIndex) => ({ clientKey: `unified-equation-question-${startedAt}-${itemIndex}`, recordType: "practice" as const, quizKind: "equation" as const, source: "exam" as const, correct: equationAnswerIsExact(item.question, item.response, config.requireBalancing), payload: { version: 2, question: item.question, response: item.response, requireBalancing: config.requireBalancing, fixedCount: config.fixedCount }, createdAt })),
+    ];
+    void appendHistory(records);
+  }, [config, index, items, router, scope, startedAt]);
+
+  useEffect(() => {
+    if (mode !== "running" || startedAt === null) return;
+    const tick = () => {
+      const elapsed = Math.floor((Date.now() - startedAt) / 1000);
+      const nextRemaining = Math.max(0, config.durationMinutes * 60 - elapsed);
+      setRemainingSeconds(nextRemaining);
+      if (nextRemaining === 0) finishExam();
+    };
+    tick();
+    const timer = window.setInterval(tick, 1000);
+    return () => window.clearInterval(timer);
+  }, [config.durationMinutes, finishExam, mode, startedAt]);
+
+  const startExam = () => {
+    if (!materials || !language || !reactions || !total) return;
+    setGenerationError(null);
+    try {
+      const context: UnifiedExamContext = { materials, language, reactions, scope, fixedCount: config.fixedCount };
+      const generated: UnifiedExamItem[] = [];
+      UNIFIED_EXAM_TYPE_REGISTRY.forEach((type) => {
+        for (let count = 0; count < config.counts[type.id]; count += 1) {
+          generated.push(type.generate(context, generated.at(-1)));
+        }
+      });
+      const nextItems = shuffled(generated);
+      const now = Date.now();
+      setItems(nextItems);
+      setIndex(0);
+      setStartedAt(now);
+      setEndedAt(null);
+      savedStartRef.current = null;
+      setRemainingSeconds(config.durationMinutes * 60);
+      setMode("running");
+    } catch (error) {
+      setGenerationError(error instanceof Error ? error.message : "当前元素范围无法生成完整考试");
+    }
+  };
+
+  const activeItem = mode === "running" ? items[index] : undefined;
+  const currentAnsweredCount = items.filter(unifiedItemAnswered).length;
+  const resultConfig = lastResult?.config ?? config;
+  const resultItems = lastResult?.items ?? items;
+  const correctCount = resultItems.filter((item) => unifiedItemCorrect(item, resultConfig.requireBalancing)).length;
+  const answeredCount = resultItems.filter(unifiedItemAnswered).length;
+  const score = resultItems.length ? Math.round(correctCount / resultItems.length * resultConfig.totalPoints) : 0;
+  const usedSeconds = lastResult
+    ? Math.min(resultConfig.durationMinutes * 60, Math.max(0, Math.floor((lastResult.endedAt - lastResult.startedAt) / 1000)))
+    : startedAt === null ? 0 : Math.max(0, config.durationMinutes * 60 - remainingSeconds);
+  const updateColorAnswer = (choiceId: string) => {
+    setItems((current) => current.map((item, itemIndex) => {
+      if (itemIndex !== index || item.kind !== "color") return item;
+      const selected = new Set(item.selected);
+      if (item.question.format === "which_are_color") {
+        if (selected.has(choiceId)) selected.delete(choiceId);
+        else selected.add(choiceId);
+      }
+      else { selected.clear(); selected.add(choiceId); }
+      return { ...item, selected };
+    }));
+  };
+  const updateEquationAnswer = (response: EquationResponse) => setItems((current) => current.map((item, itemIndex) => itemIndex === index && item.kind === "equation" ? { ...item, response } : item));
+  if (loadError) return <main className="app-shell"><section className="loading-card"><h1>统一考试题库加载失败</h1><p>{loadError}</p></section></main>;
+  if (!materials || !language || !reactions) return <main className="app-shell"><section className="loading-card"><div className="loader" /><h1>正在加载统一考试题库</h1></section></main>;
+  if (resultRoute && !storageReady) return <main className="app-shell"><section className="loading-card"><div className="loader" /><h1>正在读取考试结果</h1></section></main>;
+
+  return <main className={`app-shell ${activeItem?.kind === "equation" ? "equation-app" : ""}`}>
+    {mode === "setup" ? <section className="exam-screen unified-exam-screen">
+      <div className="exam-heading"><span className="panel-label">统一考试设置</span><h1>生成一份综合限时考试</h1><p>颜色性质与反应方程式混合编排，统一计时、计分和交卷。</p></div>
+      <div className="exam-config-grid">
+        <label className="exam-field"><span>限时（分钟）</span><input type="number" min="1" max="180" value={config.durationMinutes} onChange={(event) => setConfig({ ...config, durationMinutes: Math.min(180, Math.max(1, Number(event.target.value) || 1)) })} /></label>
+        <label className="exam-field"><span>试卷总分</span><input type="number" min="10" max="1000" value={config.totalPoints} onChange={(event) => setConfig({ ...config, totalPoints: Math.min(1000, Math.max(10, Number(event.target.value) || 100)) })} /></label>
+      </div>
+      {["颜色性质", "反应方程式"].map((group) => <section className="unified-exam-group" key={group}><div className="exam-review-heading"><span className="panel-label">{group}</span></div><div className="exam-counts">{UNIFIED_EXAM_TYPE_REGISTRY.filter((type) => type.group === group).map((type) => <label className="exam-count-card" key={type.id}><span>{type.label}</span><small>{type.description}</small><input type="number" min="0" max="100" value={config.counts[type.id]} onChange={(event) => setConfig({ ...config, counts: { ...config.counts, [type.id]: Math.min(100, Math.max(0, Number(event.target.value) || 0)) } })} /><em>题</em></label>)}</div></section>)}
+      <div className="equation-options unified-equation-options"><label><input type="checkbox" checked={config.requireBalancing} onChange={(event) => setConfig({ ...config, requireBalancing: event.target.checked })} /><span><b>方程式要求配平</b><small>检测所有物质的系数</small></span></label><label><input type="checkbox" checked={config.fixedCount} onChange={(event) => setConfig({ ...config, fixedCount: event.target.checked })} /><span><b>固定物质种类数</b><small>关闭后可自由增删空格</small></span></label></div>
+      <ElementScopePicker scope={scope} onApply={(next) => { setScope(next); setGenerationError(null); return true; }} error={generationError} />
+      <div className="exam-summary"><span>共 <b>{total}</b> 题</span><span>限时 <b>{config.durationMinutes}</b> 分钟</span><span>满分 <b>{config.totalPoints}</b> 分</span></div>
+      <div className="exam-screen-actions exam-setup-actions">{lastResult ? <button className="navigation-action" onClick={() => router.push(publicPath("/test/result"))}>上次考试结果</button> : null}<button className="primary-action" disabled={!total} onClick={startExam}>开始考试</button></div>
+    </section> : mode === "result" ? <section className="exam-screen result-screen unified-result">
+      <div className="score-orb"><strong>{score}</strong><span>/ {resultConfig.totalPoints} 分</span></div>
+      <div className="exam-heading"><span className="panel-label">考试完成</span><h1>{score >= resultConfig.totalPoints * .8 ? "掌握得很扎实" : score >= resultConfig.totalPoints * .6 ? "基础已经建立" : "建议继续巩固"}</h1><p>作答 {answeredCount} / {resultItems.length} 题，答对 {correctCount} 题，用时 {formatDuration(usedSeconds)}。</p></div>
+      <div className="result-breakdown">{UNIFIED_EXAM_TYPE_REGISTRY.filter((type) => resultConfig.counts[type.id] > 0).map((type) => { const matching = resultItems.filter((item) => item.typeId === type.id); return <div key={type.id}><span>{type.label}</span><b>{matching.filter((item) => unifiedItemCorrect(item, resultConfig.requireBalancing)).length} / {matching.length}</b><small>作答 {matching.filter(unifiedItemAnswered).length} 题</small></div>; })}</div>
+      <section className="exam-review-list"><div className="exam-review-heading"><span className="panel-label">整卷解析</span><h2>颜色与方程式统一复盘</h2><p>点击题目展开作答结果、标准答案和教材依据。</p></div>{resultItems.map((item, itemIndex) => item.kind === "color" ? <ExamReviewCard question={item.question} selected={item.selected} index={itemIndex} data={materials} key={item.question.id} /> : <EquationExamReviewCard question={item.question} response={item.response} requireBalancing={resultConfig.requireBalancing} index={itemIndex} key={item.question.id} />)}</section>
+      <div className="exam-screen-actions"><button className="primary-action" onClick={() => router.push(publicPath("/test"))}>再考一次</button></div>
+    </section> : activeItem ? <section className={`workspace ${activeItem.kind === "equation" ? "equation-workspace" : ""}`}>
+      <aside className="control-panel"><div className="exam-progress-panel"><div className="panel-label">综合考试进行中</div><div className="exam-progress-number"><strong>{currentAnsweredCount}</strong><span>/ {items.length}</span></div><div className="exam-progress-bar" role="progressbar" aria-label="已完成题目" aria-valuemin={0} aria-valuemax={items.length} aria-valuenow={currentAnsweredCount}><i style={{ width: `${items.length ? currentAnsweredCount / items.length * 100 : 0}%` }} /></div><p>当前题型</p><b>{UNIFIED_EXAM_TYPE_REGISTRY.find((type) => type.id === activeItem.typeId)?.label}</b><div className="exam-question-map" aria-label="考试题目导航">{items.map((item, itemIndex) => <button className={`${itemIndex === index ? "current" : ""} ${unifiedItemAnswered(item) ? "answered" : ""}`} onClick={() => setIndex(itemIndex)} key={`${item.typeId}-${itemIndex}`}>{itemIndex + 1}</button>)}</div><div className="exam-progress-clock"><small>剩余时间</small><strong>{formatDuration(remainingSeconds)}</strong></div><button className="end-exam-button" onClick={() => { if (window.confirm("确定提前交卷吗？未作答题目将不计分。")) finishExam(); }}>提前交卷</button></div></aside>
+      <section className={`quiz-card ${activeItem.kind === "equation" ? "equation-card" : ""}`}>
+        {activeItem.kind === "color" ? <><div className="quiz-meta"><span className="type-tag">{activeItem.question.format === "which_are_color" ? "多项选择" : "单项选择"}</span><span>第 {index + 1} / {items.length} 题</span></div><div className="question-area">{activeItem.question.format === "color_of" ? <><div className="hero-formula"><Formula observation={activeItem.question.target} /></div><div className="qualifier"><MarkdownText inline>{stateContextText(activeItem.question.target)}</MarkdownText></div><h1>是什么颜色？</h1></> : <><div className="question-kicker">下列物质中，呈</div><div className="hero-color">{activeItem.question.targetColor}</div><h1>{activeItem.question.format === "which_one_is_color" ? "的是哪一种？" : "的有哪些？"}</h1></>}</div><div className={activeItem.question.format === "which_are_color" ? "choices multi" : "choices"}>{activeItem.question.choices.map((choice, choiceIndex) => <button key={`${activeItem.question.id}-${choice.id}`} className={`choice ${activeItem.selected.has(choice.id) ? "selected" : ""}`} onClick={() => updateColorAnswer(choice.id)}><span className="choice-key">{choiceIndex + 1}</span><span className="choice-label">{choice.observation ? <Formula observation={choice.observation} compact /> : choice.label}{choice.observation ? <small><MarkdownText inline>{stateContextText(choice.observation)}</MarkdownText></small> : null}</span><span className="choice-state">{activeItem.question.format === "which_are_color" ? "□" : "○"}</span></button>)}</div></> : <EquationExamQuestion key={activeItem.question.id} question={activeItem.question} response={activeItem.response} requireBalancing={config.requireBalancing} fixedCount={config.fixedCount} onChange={updateEquationAnswer} />}
+        <div className="quiz-actions"><button className="navigation-action" disabled={index === 0} onClick={() => setIndex(index - 1)}>上一题</button>{index + 1 === items.length ? <button className="primary-action" onClick={() => { if (window.confirm("确定提交试卷吗？提交后不能再修改答案。")) finishExam(); }}>提交试卷</button> : <button className="primary-action" onClick={() => setIndex(index + 1)}>下一题</button>}</div>
+      </section><aside className="source-panel"><div className="source-placeholder"><div className="source-symbol">考</div><h2>交卷后查看解析</h2><p>所有题目的标准答案、教材依据和页码会在统一成绩页中显示。</p></div></aside>
+    </section> : null}
+  </main>;
+}
+
+export type QuizArea = "color" | "equation" | "test" | "paper";
+
+export function QuizApp({ initialArea = "color", canonicalizeRoot = false, testResultRoute = false }: { initialArea?: QuizArea; canonicalizeRoot?: boolean; testResultRoute?: boolean }) {
+  useEffect(() => {
+    if (canonicalizeRoot && !window.location.pathname.replace(/\/+$/, "").endsWith("/color")) {
+      window.history.replaceState(null, "", publicPath("/color"));
+    }
+  }, [canonicalizeRoot]);
+  if (initialArea === "paper") return <PaperMode />;
+  if (initialArea === "test") return <UnifiedTest resultRoute={testResultRoute} />;
+  return initialArea === "color" ? <ColorQuiz /> : <EquationQuiz />;
+}
+
+export default function Home() {
+  return <QuizApp initialArea="color" canonicalizeRoot />;
 }

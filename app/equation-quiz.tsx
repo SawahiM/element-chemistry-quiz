@@ -9,11 +9,11 @@ import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import { coefficientIsExact, equationAnswerIsExact, formulaElements } from "./equation-policy";
 import { publicPath } from "./public-path";
-import { PracticeHeader, PracticeNavigation } from "./practice-header";
+import { loadSessionResource, peekSessionResource } from "./session-cache";
 import { loadAccountData, saveAccountData } from "./account-storage";
 import { appendHistory, loadPracticeHistory, type HistoryRecord } from "./history-storage";
 
-type Participant = {
+export type Participant = {
   side: "reactant" | "product";
   position: number;
   formulaCanonical: string;
@@ -25,7 +25,7 @@ type Participant = {
 };
 
 type ReactionCondition = { valueText: string; rawText: string; relatedFormula: string | null };
-type Reaction = {
+export type Reaction = {
   id: string;
   equationCanonical: string;
   direction: string;
@@ -43,15 +43,15 @@ type Reaction = {
   };
 };
 
-type ReactionDataset = {
+export type ReactionDataset = {
   metadata: { reactionCount: number; parsedCount: number; balancedCount: number; schemaVersion: string };
   reactions: Reaction[];
 };
 
-type Direction = "forward" | "reverse";
+export type Direction = "forward" | "reverse";
 type QuizMode = "practice" | "exam_setup" | "exam_running" | "exam_result";
-type EquationQuestion = { id: string; reaction: Reaction; direction: Direction };
-type EquationResponse = {
+export type EquationQuestion = { id: string; reaction: Reaction; direction: Direction };
+export type EquationResponse = {
   formulas: string[];
   knownCoefficients: string[];
   answerCoefficients: string[];
@@ -161,7 +161,7 @@ function reactionElements(reaction: Reaction): string[] {
   return formulaElements(reaction.participants.map((part) => part.formulaCanonical));
 }
 
-function validReactions(data: ReactionDataset, scope: Set<string>): Reaction[] {
+export function validReactions(data: ReactionDataset, scope: Set<string>): Reaction[] {
   return data.reactions.filter((reaction) => {
     const reactants = reaction.participants.filter((part) => part.side === "reactant");
     const products = reaction.participants.filter((part) => part.side === "product");
@@ -209,14 +209,14 @@ function equationPracticeStats(entries: AnswerRecord[]) {
   }), { answered: 0, correct: 0, streak: 0 });
 }
 
-function questionFor(reactions: Reaction[], direction: Direction, previousId?: string): EquationQuestion {
+export function questionFor(reactions: Reaction[], direction: Direction, previousId?: string): EquationQuestion {
   const pool = reactions.filter((reaction) => reaction.id !== previousId);
   const reaction = (pool.length ? pool : reactions)[Math.floor(Math.random() * (pool.length ? pool.length : reactions.length))];
   if (!reaction) throw new Error("当前范围内没有可用的方程式");
   return { id: `${direction}-${reaction.id}-${Date.now()}-${Math.random()}`, reaction, direction };
 }
 
-function hiddenParticipants(question: EquationQuestion): Participant[] {
+export function hiddenParticipants(question: EquationQuestion): Participant[] {
   return question.reaction.participants
     .filter((part) => part.side === (question.direction === "forward" ? "product" : "reactant"))
     .sort((left, right) => left.position - right.position);
@@ -228,7 +228,7 @@ function visibleParticipants(question: EquationQuestion): Participant[] {
     .sort((left, right) => left.position - right.position);
 }
 
-function blankResponse(question: EquationQuestion, fixedCount: boolean): EquationResponse {
+export function blankResponse(question: EquationQuestion, fixedCount: boolean): EquationResponse {
   const answerCount = fixedCount ? hiddenParticipants(question).length : 1;
   return {
     formulas: Array(answerCount).fill(""),
@@ -237,7 +237,7 @@ function blankResponse(question: EquationQuestion, fixedCount: boolean): Equatio
   };
 }
 
-function exact(question: EquationQuestion, response: EquationResponse, requireBalancing: boolean): boolean {
+export function exact(question: EquationQuestion, response: EquationResponse, requireBalancing: boolean): boolean {
   if (requireBalancing && (
     response.knownCoefficients.some((value) => !value.trim())
     || response.answerCoefficients.some((value) => !value.trim())
@@ -359,8 +359,91 @@ function EquationLine({
   );
 }
 
-export default function EquationQuiz({ onSwitchToColors, onSwitchToPaper }: { onSwitchToColors: () => void; onSwitchToPaper: () => void }) {
-  const [data, setData] = useState<ReactionDataset | null>(null);
+export function EquationExamQuestion({
+  question,
+  response,
+  requireBalancing,
+  fixedCount,
+  onChange,
+}: {
+  question: EquationQuestion;
+  response: EquationResponse;
+  requireBalancing: boolean;
+  fixedCount: boolean;
+  onChange: (response: EquationResponse) => void;
+}) {
+  const [activeField, setActiveField] = useState<ActiveField>({ kind: "formulas", index: 0 });
+  const keypadElements = reactionElements(question.reaction);
+  const includesElectron = question.reaction.participants.some((part) => part.formulaCanonical.includes("e^-"));
+  const updateField = (kind: keyof EquationResponse, index: number, value: string) => {
+    const next = { ...response, [kind]: response[kind].map((item, itemIndex) => itemIndex === index ? value : item) };
+    onChange(next);
+  };
+  const appendToken = (token: string) => {
+    const values = response[activeField.kind];
+    updateField(activeField.kind, activeField.index, `${values[activeField.index] || ""}${token}`);
+  };
+  const backspace = () => {
+    const values = response[activeField.kind];
+    updateField(activeField.kind, activeField.index, (values[activeField.index] || "").slice(0, -1));
+  };
+  const addAnswer = () => onChange({
+    ...response,
+    formulas: [...response.formulas, ""],
+    answerCoefficients: [...response.answerCoefficients, ""],
+  });
+  const removeAnswer = (index: number) => {
+    onChange({
+      ...response,
+      formulas: response.formulas.filter((_, itemIndex) => itemIndex !== index),
+      answerCoefficients: response.answerCoefficients.filter((_, itemIndex) => itemIndex !== index),
+    });
+    setActiveField({ kind: "formulas", index: 0 });
+  };
+
+  return <>
+    <div className="quiz-meta"><span className="type-tag">填空题</span><span>{question.direction === "forward" ? "根据反应物和条件完成产物" : "根据产物和条件倒推反应物"} · {requireBalancing ? "需配平" : "忽略系数"}</span></div>
+    <div className="equation-prompt"><span>{question.direction === "forward" ? "完成方程式的产物一侧" : "补全方程式的反应物一侧"}</span><h1>{fixedCount ? `已给出 ${hiddenParticipants(question).length} 个作答位置` : "可按需要增加或删除物质"}</h1></div>
+    <EquationLine question={question} requireBalancing={requireBalancing} response={response} fixedCount={fixedCount} activeField={activeField} submitted={false} onField={updateField} onActivate={setActiveField} onAdd={addAnswer} onRemove={removeAnswer} />
+    <div className="touch-keyboard">
+      <div className="keyboard-heading"><span>元素键盘</span><small>元素种类由已知一侧确定</small></div>
+      <div className="keyboard-layout">
+        <div className="element-key-grid">{keypadElements.map((element) => <button key={element} onClick={() => appendToken(element)}>{element}</button>)}{includesElectron ? <button onClick={() => appendToken("e^-")}>e⁻</button> : null}{["(", ")", "[", "]", "+", "-", "^"].map((token) => <button className="symbol-key" key={token} onClick={() => appendToken(token)}>{token}</button>)}</div>
+        <div className="number-keypad">{["7", "8", "9", "4", "5", "6", "1", "2", "3", "/", "0"].map((number) => <button key={number} onClick={() => appendToken(number)}>{number}</button>)}<button className="backspace-key" onClick={backspace}>⌫</button></div>
+      </div>
+    </div>
+  </>;
+}
+
+export function EquationExamReviewCard({
+  question,
+  response,
+  requireBalancing,
+  index,
+}: {
+  question: EquationQuestion;
+  response: EquationResponse;
+  requireBalancing: boolean;
+  index: number;
+}) {
+  const correct = exact(question, response, requireBalancing);
+  const answered = response.formulas.some((answer) => answer.trim())
+    || response.knownCoefficients.some((answer) => answer.trim())
+    || response.answerCoefficients.some((answer) => answer.trim());
+  return <details className={correct ? "exam-review-card correct-review" : "exam-review-card wrong-review"}>
+    <summary><span>第 {index + 1} 题</span><b>{question.direction === "forward" ? "正推产物" : "逆推反应物"}</b><em>{correct ? "正确" : answered ? "错误" : "未作答"}</em></summary>
+    <div className="exam-review-body equation-review-body">
+      <p><b>你的答案：</b>{response.formulas.map((formula, answerIndex) => `${requireBalancing ? response.answerCoefficients[answerIndex] || "?" : ""}${formula}`).filter(Boolean).join(" + ") || "未作答"}</p>
+      <p><b>标准方程式：</b><Formula value={question.reaction.equationCanonical} /></p>
+      <p><b>条件：</b>{conditionLabel(question.reaction)}</p>
+      <div className="equation-ocr-text"><MarkdownText>{question.reaction.source.evidenceText}</MarkdownText></div>
+      <span className="page-reference"><b>{sourcePageLabel(question.reaction)}</b><small>PDF 第 {question.reaction.source.pdfPage} 页</small></span>
+    </div>
+  </details>;
+}
+
+export default function EquationQuiz() {
+  const [data, setData] = useState<ReactionDataset | null>(() => peekSessionResource(publicPath("/reactions.quiz.v1.json")));
   const [loadError, setLoadError] = useState<string | null>(null);
   const [direction, setDirection] = useState<Direction>("forward");
   const [requireBalancing, setRequireBalancing] = useState(true);
@@ -386,11 +469,7 @@ export default function EquationQuiz({ onSwitchToColors, onSwitchToPaper }: { on
   const savedExamStartRef = useRef<number | null>(null);
 
   useEffect(() => {
-    fetch(publicPath("/reactions.quiz.v1.json"))
-      .then((response) => {
-        if (!response.ok) throw new Error("方程式题库载入失败");
-        return response.json() as Promise<ReactionDataset>;
-      })
+    loadSessionResource<ReactionDataset>(publicPath("/reactions.quiz.v1.json"), "方程式题库载入失败")
       .then((payload) => setData(payload))
       .catch((error: Error) => setLoadError(error.message));
   }, []);
@@ -410,8 +489,8 @@ export default function EquationQuiz({ onSwitchToColors, onSwitchToPaper }: { on
 
   useEffect(() => {
     if (!data || question || restored.current) return;
-    restored.current = true;
     const timer = window.setTimeout(async () => {
+      restored.current = true;
       try {
         const [stored, historyRecords] = await Promise.all([
           loadAccountData<StoredEquationSession>(SESSION_KEY),
@@ -744,20 +823,6 @@ export default function EquationQuiz({ onSwitchToColors, onSwitchToPaper }: { on
 
   return (
     <main className="app-shell equation-app">
-      <PracticeHeader>
-          <PracticeNavigation
-            active="equations"
-            onColors={onSwitchToColors}
-            onPaper={mode === "exam_running" ? undefined : onSwitchToPaper}
-            onExam={() => setMode("exam_setup")}
-            examActive={mode !== "practice"}
-            examDisabled={mode === "exam_running"}
-          />
-          {mode === "exam_running"
-            ? <div className={remainingSeconds <= 60 ? "exam-clock urgent" : "exam-clock"}><span>考试倒计时</span><b>{Math.floor(remainingSeconds / 60).toString().padStart(2, "0")}:{(remainingSeconds % 60).toString().padStart(2, "0")}</b></div>
-            : null}
-      </PracticeHeader>
-
       {scopeOpen ? (
         <div className="scope-modal-backdrop" onMouseDown={(event) => { if (event.currentTarget === event.target) setScopeOpen(false); }}>
           <section className="scope-modal" role="dialog" aria-modal="true" aria-labelledby="equation-scope-title">
@@ -813,7 +878,7 @@ export default function EquationQuiz({ onSwitchToColors, onSwitchToPaper }: { on
           </div>
           <div className="exam-option-summary"><span>{requireBalancing ? "要求配平" : "不检测系数"}</span><span>{fixedCount ? "固定物质数" : "可自由增删物质"}</span><button onClick={() => { setScopeDraft(new Set(scope)); setScopeOpen(true); }}>{scopeSummary}</button></div>
           <div className="exam-summary"><span>共 <b>{examTotal}</b> 题</span><span>限时 <b>{examConfig.durationMinutes}</b> 分钟</span><span>满分 <b>{examConfig.totalPoints}</b> 分</span></div>
-          <div className="exam-screen-actions"><button className="skip-action" onClick={() => setMode("practice")}>返回练习</button><button className="primary-action" disabled={!examTotal} onClick={startExam}>开始考试</button></div>
+          <div className="exam-screen-actions"><button className="primary-action" disabled={!examTotal} onClick={startExam}>开始考试</button></div>
         </section>
       ) : mode === "exam_result" ? (
         <section className="exam-screen result-screen equation-result">
@@ -834,7 +899,7 @@ export default function EquationQuiz({ onSwitchToColors, onSwitchToPaper }: { on
               </div>
             </details>)}
           </section>
-          <div className="exam-screen-actions"><button className="skip-action" onClick={() => { setMode("practice"); setNewQuestion(direction); }}>返回练习</button><button className="primary-action" onClick={() => setMode("exam_setup")}>再考一次</button></div>
+          <div className="exam-screen-actions"><button className="primary-action" onClick={() => setMode("exam_setup")}>再考一次</button></div>
         </section>
       ) : (
         <section className="workspace equation-workspace">
