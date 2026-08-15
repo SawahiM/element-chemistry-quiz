@@ -5,7 +5,6 @@
 ## 1. 当前生产架构
 
 - `main`：VPS 生产版本，使用 VPS 本机 PostgreSQL。
-- `agent/vercel-neon-deployment`：Vercel + Neon 的独立版本，不合并到 `main`。
 - 正式域名：`https://chemquiz.dpdns.org/`。
 - 应用目录：`/opt/quizapp/current`，它是指向具体 release 的符号链接。
 - 本机数据库：PostgreSQL 17，仅通过 `127.0.0.1:5432` 访问。
@@ -38,7 +37,7 @@ A:\ElementChemistry\quiz_app\.tools
 - `.tools/`、`.env*`、私钥、数据库连接串和 `/etc/quizapp.env` 必须保持在 Git 忽略范围内。
 - 不要在命令输出、日志、提交信息或文档中打印令牌、数据库密码或完整连接串。
 - SSH 始终使用 `StrictHostKeyChecking=yes` 和项目提供的 `known_hosts`。
-- 工作区存在无关修改时，不使用 `git add -A`；应指定文件，或创建独立 worktree。
+- 不使用 `git add -A` 混入无关修改；应始终指定当前任务的文件。
 
 ## 3. GitHub CLI 登录
 
@@ -59,6 +58,15 @@ $env:GH_CONFIG_DIR='A:\ElementChemistry\quiz_app\.tools\gh-config'
 
 `--insecure-storage` 会把令牌写入已被 Git 忽略的 `.tools/gh-config/hosts.yml`。该文件仍按敏感文件处理，不得复制到仓库或发送给他人。
 
+首次配置或普通 `git push` 无法读取项目凭据时，为当前仓库登记带配置目录的凭据助手：
+
+```powershell
+git config --local credential.https://github.com.helper `
+  '!f() { GH_CONFIG_DIR=A:/ElementChemistry/quiz_app/.tools/gh-config A:/ElementChemistry/quiz_app/.tools/bin/gh.exe auth git-credential "$@"; }; f'
+```
+
+该设置只写入本仓库的 `.git/config`，不会提交令牌或修改全局 Git 配置。
+
 ## 4. 分支与提交规则
 
 ### 4.1 普通修改
@@ -69,21 +77,21 @@ $env:GH_CONFIG_DIR='A:\ElementChemistry\quiz_app\.tools\gh-config'
 4. 推送并审核后更新 `main`。
 5. VPS 只部署已经进入 GitHub `main` 的源码状态。
 
-### 4.2 两套部署不可混合
+### 4.2 只维护 VPS 部署线
 
 - `main` 使用 `postgres` + `drizzle-orm/postgres-js` 连接本机 PostgreSQL。
-- Vercel 分支可以继续使用 Neon，但不得把 Neon 驱动、Neon 环境配置或 Vercel 专用部署文件合并回 `main`。
-- 不要把 Vercel/Neon 分支作为 VPS release 的构建来源。
+- 原 Vercel/Neon 分支不再保留，不要重新引入 Neon 驱动、Neon 环境配置或 Vercel 专用部署文件。
+- VPS release 只从已经进入 GitHub `main` 的提交构建。
 
-### 4.3 脏工作区
+### 4.3 并行任务
 
-推荐创建独立 worktree：
+普通修改直接在仓库根目录创建分支，不需要 `work/` 目录。只有确实需要同时保留两个工作分支时，才创建独立 worktree：
 
 ```powershell
-git worktree add -b agent/<任务名> .\work\<任务名> main
+git worktree add -b agent/<任务名> .\work\<任务名> origin/main
 ```
 
-这样可以避免将当前工作区的界面、测试或临时文件误提交。
+任务完成后先确认 worktree 干净，再使用 `git worktree remove` 移除。不要把长期未同步的根工作树当作创建新分支的基线。
 
 ## 5. 颜色数据更新后的校验
 
@@ -111,32 +119,35 @@ git diff --stat
 
 ## 6. GitHub 同步流程
 
-常规情况下使用 Git：
+常规修改直接在 `quiz_app` 根目录完成。开始任务：
+
+```powershell
+git fetch origin
+git switch main
+git merge --ff-only origin/main
+git switch -c agent/<任务名>
+```
+
+提交并同步：
 
 ```powershell
 git status -sb
 git add -- <明确的文件列表>
 git diff --cached --check
 git commit -m "<简短说明>"
-git push -u origin <分支名>
+pnpm test
+git push -u origin HEAD
 ```
 
-更新生产 `main` 前，应核对远端仓库和提交：
+PR 合并后收尾：
 
 ```powershell
-$env:GH_CONFIG_DIR='A:\ElementChemistry\quiz_app\.tools\gh-config'
-& '.\.tools\bin\gh.exe' api `
-  'repos/SawahiM/element-chemistry-quiz/branches/main' `
-  --jq '.commit.sha'
+git switch main
+git pull --ff-only
+git branch -d agent/<任务名>
 ```
 
-Windows Git 若出现 `SEC_E_NO_CREDENTIALS`，不要把令牌写进 remote URL。优先修复 GitHub CLI 凭据助手；确需使用 GitHub Git Data API 时，必须：
-
-- 以当前远端 `main` 为父提交；
-- 上传完整 blob 并校验 blob SHA；
-- 创建 tree 和 commit；
-- 使用 `force=false` 快进分支；
-- 更新后再次读取远端分支 SHA 和文件 blob SHA。
+Windows Git 若出现 `SEC_E_NO_CREDENTIALS`，不要把令牌写进 remote URL；按第 3 节检查项目 GitHub CLI 登录和凭据助手。
 
 ## 7. 构建 VPS release
 
@@ -291,4 +302,4 @@ readlink -f /opt/quizapp/current
 - [ ] 首页、认证接口、颜色数据和页图在线验证通过。
 - [ ] 未安装应用层数据库备份 timer。
 - [ ] 临时包已清理，磁盘空间可接受。
-- [ ] Vercel/Neon 分支未合并到 `main`。
+- [ ] 未重新引入 Vercel/Neon 专用配置。
