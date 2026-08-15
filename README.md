@@ -59,5 +59,6 @@ release\ElementChemistryDemo
 
 ## 文档
 
-- `docs/化学式记录与显示规范.md`
-- `docs/ChemQuizFormat语言.md`
+- [化学式记录与显示规范](docs/化学式记录与显示规范.md)：化学式的存储、规范化与前端显示规则。
+- [ChemQuizFormat 语言](docs/ChemQuizFormat语言.md)：题目格式定义及生成规则。
+- [GitHub 同步与 VPS 部署流程](docs/GitHub与VPS部署流程.md)：生产分支、standalone 运行时依赖、本机发布包验证、VPS 冒烟测试、原子切换与回滚流程。
