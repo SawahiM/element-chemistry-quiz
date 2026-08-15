@@ -270,6 +270,18 @@ CREATE TABLE observations (
   substance_id TEXT NOT NULL REFERENCES substances(substance_id),
   color_id TEXT NOT NULL REFERENCES colors(color_id),
   physical_state TEXT,
+  state_category TEXT NOT NULL CHECK(state_category IN ('solid','liquid','gas','solution','unknown')),
+  state_form TEXT,
+  state_form_raw TEXT,
+  state_variant_type TEXT,
+  state_variant_label_raw TEXT,
+  state_basis TEXT NOT NULL CHECK(state_basis IN ('explicit','contextual','reference_inferred','unresolved')),
+  state_evidence_text TEXT NOT NULL,
+  state_evidence_scope TEXT NOT NULL,
+  state_confidence REAL NOT NULL CHECK(state_confidence BETWEEN 0 AND 1),
+  state_inference_rule TEXT NOT NULL,
+  state_reference_condition TEXT,
+  state_notes TEXT,
   observation_kind TEXT NOT NULL,
   medium TEXT,
   conditions TEXT,
@@ -278,7 +290,8 @@ CREATE TABLE observations (
   color_question_eligible INTEGER NOT NULL DEFAULT 0,
   selection_question_eligible INTEGER NOT NULL DEFAULT 0,
   ambiguity_note TEXT,
-  UNIQUE (substance_id, color_id, physical_state, observation_kind, medium, conditions)
+  UNIQUE (substance_id, color_id, state_category, state_form, state_variant_type,
+          state_variant_label_raw, observation_kind, medium, conditions)
 );
 
 CREATE TABLE observation_sources (
@@ -386,7 +399,23 @@ def build(input_path: Path, db_path: Path, json_path: Path) -> dict:
         if formula_raw:
             con.execute("INSERT OR IGNORE INTO substance_aliases VALUES (?, ?, 'formula_source')", (substance_id, formula_raw))
 
-        state = STATE_MAP.get(compact(row.get("physical_form")), compact(row.get("physical_form"))) or None
+        state_category = compact(row.get("state_category")) or "unknown"
+        if state_category not in {"solid", "liquid", "gas", "solution", "unknown"}:
+            raise ValueError(f"Invalid state_category in {row.get('observation_id')}: {state_category}")
+        state_form = compact(row.get("state_form")) or None
+        state_form_raw = compact(row.get("state_form_raw")) or None
+        state_variant_type = compact(row.get("state_variant_type")) or None
+        state_variant_label_raw = compact(row.get("state_variant_label_raw")) or None
+        state_basis = compact(row.get("state_basis")) or "unresolved"
+        state_evidence_text = compact(row.get("state_evidence_text")) or compact(row.get("evidence_text"))
+        state_evidence_scope = compact(row.get("state_evidence_scope")) or "same_sentence"
+        state_confidence = float(row.get("state_confidence") or 0)
+        state_inference_rule = compact(row.get("state_inference_rule")) or "R-UNRESOLVED"
+        state_reference_condition = compact(row.get("state_reference_condition")) or None
+        state_notes = compact(row.get("state_notes")) or None
+        state = compact(row.get("state_description")) or STATE_MAP.get(
+            compact(row.get("physical_form")), compact(row.get("physical_form"))
+        ) or "状态未明"
         kind = compact(row.get("observation_kind")) or "物质外观"
         medium = compact(row.get("medium")) or None
         conditions = compact(row.get("conditions")) or None
@@ -424,13 +453,28 @@ def build(input_path: Path, db_path: Path, json_path: Path) -> dict:
                 con.execute("INSERT OR IGNORE INTO color_aliases VALUES (?, ?)", (color_id, alias))
                 raw_color_counts[alias] += 1
 
-            observation_key = (substance_id, color_id, state, kind, medium, conditions)
+            observation_key = (
+                substance_id, color_id, state_category, state_form, state_variant_type,
+                state_variant_label_raw, kind, medium, conditions,
+            )
             observation_id = observation_ids.setdefault(observation_key, stable_id("obs", *observation_key))
             con.execute(
                 """INSERT OR IGNORE INTO observations
-                   (observation_id, substance_id, color_id, physical_state, observation_kind, medium, conditions, confidence)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                (observation_id, substance_id, color_id, state, kind, medium, conditions, float(row.get("extraction_confidence") or 0)),
+                   (observation_id, substance_id, color_id, physical_state,
+                    state_category, state_form, state_form_raw, state_variant_type,
+                    state_variant_label_raw, state_basis, state_evidence_text,
+                    state_evidence_scope, state_confidence, state_inference_rule,
+                    state_reference_condition, state_notes,
+                    observation_kind, medium, conditions, confidence)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    observation_id, substance_id, color_id, state,
+                    state_category, state_form, state_form_raw, state_variant_type,
+                    state_variant_label_raw, state_basis, state_evidence_text,
+                    state_evidence_scope, state_confidence, state_inference_rule,
+                    state_reference_condition, state_notes,
+                    kind, medium, conditions, float(row.get("extraction_confidence") or 0),
+                ),
             )
             for raw_text in raw_spellings:
                 raw_color_id = stable_id("rawcol", raw_text)
@@ -541,10 +585,18 @@ def build(input_path: Path, db_path: Path, json_path: Path) -> dict:
     ).fetchall()
     by_subject_qualifier: dict[tuple, set[str]] = defaultdict(set)
     for row in rows:
-        qualifier = (row["substance_id"], row["physical_state"], row["observation_kind"], row["medium"], row["conditions"])
+        qualifier = (
+            row["substance_id"], row["state_category"], row["state_form"],
+            row["state_variant_type"], row["state_variant_label_raw"],
+            row["observation_kind"], row["medium"], row["conditions"],
+        )
         by_subject_qualifier[qualifier].add(row["color_id"])
     for row in rows:
-        qualifier = (row["substance_id"], row["physical_state"], row["observation_kind"], row["medium"], row["conditions"])
+        qualifier = (
+            row["substance_id"], row["state_category"], row["state_form"],
+            row["state_variant_type"], row["state_variant_label_raw"],
+            row["observation_kind"], row["medium"], row["conditions"],
+        )
         simple_color = row["color_kind"] in {"single", "composite"}
         formula_safe = row["formula_quality"] != "suspicious"
         color_eligible = int(simple_color and formula_safe)
@@ -559,12 +611,13 @@ def build(input_path: Path, db_path: Path, json_path: Path) -> dict:
         )
 
     metadata = {
-        "schema_version": "1.2.0",
-        "dataset_version": "1.4.0",
+        "schema_version": "1.3.0",
+        "dataset_version": "1.5.0",
         "source_high_confidence_rows": str(len(high)),
         "build_policy": "non-exercise; confidence>=0.75; no uncertainty flags",
         "formula_display": "canonical text + mhchem",
         "color_semantics": "raw bidirectional mappings + directed standard-term generalizations",
+        "state_semantics": "state category + form + variant + evidence basis; no duplicate phase field",
     }
     con.executemany("INSERT INTO metadata VALUES (?, ?)", metadata.items())
     con.commit()
@@ -624,6 +677,18 @@ def build(input_path: Path, db_path: Path, json_path: Path) -> dict:
             "acceptedColorIds": accepted_by_observation[row["observation_id"]] or [row["color_id"]],
             "acceptanceReasons": acceptance_reasons_by_observation[row["observation_id"]],
             "physicalState": row["physical_state"],
+            "stateCategory": row["state_category"],
+            "stateForm": row["state_form"],
+            "stateFormRaw": row["state_form_raw"],
+            "stateVariantType": row["state_variant_type"],
+            "stateVariantLabelRaw": row["state_variant_label_raw"],
+            "stateBasis": row["state_basis"],
+            "stateEvidenceText": row["state_evidence_text"],
+            "stateEvidenceScope": row["state_evidence_scope"],
+            "stateConfidence": row["state_confidence"],
+            "stateInferenceRule": row["state_inference_rule"],
+            "stateReferenceCondition": row["state_reference_condition"],
+            "stateNotes": row["state_notes"],
             "observationKind": row["observation_kind"],
             "medium": row["medium"],
             "conditions": row["conditions"],
@@ -643,6 +708,7 @@ def build(input_path: Path, db_path: Path, json_path: Path) -> dict:
             "selectionQuestionEligibleCount": sum(item["selectionQuestionEligible"] for item in runtime_observations),
             "rawColorExpressionCount": len(raw_mapping_specs),
             "colorConnectionCount": sum(len(targets) for targets in COLOR_GENERALIZATIONS.values()),
+            "stateUnknownCount": sum(item["stateCategory"] == "unknown" for item in runtime_observations),
         },
         "colors": [{
             "id": row["color_id"],

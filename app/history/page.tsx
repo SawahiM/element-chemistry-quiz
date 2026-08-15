@@ -9,11 +9,27 @@ import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import { clearHistory, deleteHistoryRecord, loadHistory, type HistoryRecord } from "../history-storage";
 import { publicPath } from "../public-path";
+import { stateBasisLabel, stateContextText, type StateCategory } from "../material-state";
 import "./history.css";
 
 type Tab = "exams" | "practice" | "wrong";
 type Source = { pdf_page: number; printed_page: number | null; evidence_text: string };
-type Observation = { id: string; displayLabel: string; displayMode: "mhchem" | "text"; formulaMhchem: string | null; sources: Source[] };
+type Observation = {
+  id: string;
+  displayLabel: string;
+  displayMode: "mhchem" | "text";
+  formulaMhchem: string | null;
+  physicalState: string | null;
+  stateCategory: StateCategory;
+  stateForm: string | null;
+  stateVariantType: string | null;
+  stateVariantLabelRaw: string | null;
+  stateBasis: "explicit" | "contextual" | "reference_inferred" | "unresolved";
+  stateInferenceRule: string;
+  medium: string | null;
+  conditions: string | null;
+  sources: Source[];
+};
 type Materials = { observations: Observation[] };
 type StoredColorQuestion = {
   id: string;
@@ -83,9 +99,10 @@ function duration(seconds: number) {
 function colorPrompt(question: StoredColorQuestion, observations: Map<string, Observation>) {
   if (question.format !== "color_of") return <span>{question.targetColor || "颜色题"}</span>;
   const target = observations.get(question.targetId);
-  return target?.displayMode === "mhchem" && target.formulaMhchem
+  const formula = target?.displayMode === "mhchem" && target.formulaMhchem
     ? <Formula value={target.formulaMhchem} />
     : <span>{target?.displayLabel || "物质"}</span>;
+  return <>{formula}{target ? <small>（{stateContextText(target)}）</small> : null}</>;
 }
 
 function ColorQuestionDetails({ payload, observations, index }: { payload: ColorPracticePayload; observations: Map<string, Observation>; index?: number }) {
@@ -105,7 +122,7 @@ function ColorQuestionDetails({ payload, observations, index }: { payload: Color
           <p><span>正确答案</span><b>{question.correctIds.map(choiceLabel).join("、")}</b></p>
         </div>
         {evidence.length ? <div className="history-evidence-list">{evidence.map((item) => (
-          <article key={item.id}><b>{item.displayLabel}</b><p>{item.sources[0]?.evidence_text || "教材记录"}</p><small>{item.sources[0]?.printed_page ? `教材第 ${item.sources[0].printed_page} 页` : `PDF 第 ${item.sources[0]?.pdf_page || "—"} 页`}</small></article>
+          <article key={item.id}><b>{item.displayLabel}</b><span>{stateContextText(item)} · {stateBasisLabel(item)}</span><p>{item.sources[0]?.evidence_text || "教材记录"}</p><small>{item.sources[0]?.printed_page ? `教材第 ${item.sources[0].printed_page} 页` : `PDF 第 ${item.sources[0]?.pdf_page || "—"} 页`}</small></article>
         ))}</div> : null}
       </div>
     </details>

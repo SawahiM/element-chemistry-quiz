@@ -7,6 +7,7 @@ import { formulaElements } from "./equation-policy";
 import { ALL_ELEMENTS, elementScopeTitle, ElementScopePicker } from "./element-scope-picker";
 import { publicPath } from "./public-path";
 import { PracticeBrand, PracticeNavigation } from "./practice-header";
+import { stateContextText, structuredStateKey, type StateCategory } from "./material-state";
 import { forbiddenColorPair, takeWithFinalConflictCheck } from "./question-policy";
 import {
   acceptedColorIds as acceptedIdsFor,
@@ -30,6 +31,14 @@ type Observation = {
   color: string;
   acceptedColorIds: string[];
   physicalState: string | null;
+  stateCategory: StateCategory;
+  stateForm: string | null;
+  stateVariantType: string | null;
+  stateVariantLabelRaw: string | null;
+  stateBasis: "explicit" | "contextual" | "reference_inferred" | "unresolved";
+  stateInferenceRule: string;
+  medium: string | null;
+  conditions: string | null;
   focusElement: string | null;
   colorQuestionEligible: boolean;
   selectionQuestionEligible: boolean;
@@ -152,7 +161,7 @@ function makeColorOf(data: Materials, count: number): ColorQuestion[] {
   const conflicts = paperColorConflict(data);
   const eligible = shuffled(uniqueBy(
     observations.filter((item) => item.colorQuestionEligible && hasPrintableColor(item)),
-    (item) => `${item.substanceId}|${item.color}|${item.physicalState || ""}`,
+    (item) => `${item.substanceId}|${item.color}|${structuredStateKey(item)}`,
   ));
   return eligible.slice(0, count).map((target) => {
     const accepted = new Set(acceptedIdsFor(target));
@@ -449,10 +458,10 @@ function ChoiceLine({ choices, widthHints }: { choices: React.ReactNode[]; width
 }
 
 function ColorOfQuestion({ item, number }: { item: ColorQuestion; number: number }) {
-  const state = item.target.physicalState ? `${item.target.physicalState} ` : "";
+  const state = stateContextText(item.target);
   return (
     <div className="paper-question">
-      <div className="paper-stem"><span className="paper-question-number">{number}.{"\t"}</span><span className="paper-stem-content">{state}<Formula observation={item.target} /> 的颜色为</span></div>
+      <div className="paper-stem"><span className="paper-question-number">{number}.{"\t"}</span><span className="paper-stem-content">{state ? `（${state}）` : ""}<Formula observation={item.target} /> 的颜色为</span></div>
       <ChoiceLine choices={(item.colorChoices || []).map((color) => `${color}`)} widthHints={item.colorChoices || []} />
     </div>
   );
@@ -462,7 +471,7 @@ function SubstanceQuestion({ item, number, multiple = false }: { item: ColorQues
   return (
     <div className="paper-question">
       <div className="paper-stem"><span className="paper-question-number">{number}.{"\t"}</span><span className="paper-stem-content">下列物质中，{multiple ? `颜色为${item.targetColor}的有` : `何种物质颜色为${item.targetColor}？`}</span></div>
-      <ChoiceLine choices={item.choices.map((choice) => <Formula observation={choice} />)} widthHints={item.choices.map((choice) => choice.displayLabel)} />
+      <ChoiceLine choices={item.choices.map((choice) => <span><Formula observation={choice} /><small className="paper-state">（{stateContextText(choice)}）</small></span>)} widthHints={item.choices.map((choice) => `${choice.displayLabel}${stateContextText(choice)}`)} />
     </div>
   );
 }
