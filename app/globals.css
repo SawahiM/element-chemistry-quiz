@@ -660,14 +660,14 @@ footer { min-height: 38px; display: flex; justify-content: center; gap: 38px; al
 .scope-element-grid { grid-template-columns: repeat(auto-fill, minmax(44px, 1fr)); margin-top: 22px; padding-top: 20px; border-top: 1px solid var(--line); }
 .scope-element-grid button.selected { border-color: var(--teal); background: var(--teal-pale); color: var(--teal-dark); box-shadow: inset 0 0 0 1px var(--teal); }
 .equation-reference { margin: 5px 0 20px; padding: 18px 12px; overflow-x: auto; border: 1px solid #b9d5d1; border-radius: 12px; background: var(--teal-pale); color: var(--teal-dark); text-align: center; font-size: 21px; }
-.equation-app .evidence-card p { color: #445267; font: 12px/1.75 "Noto Serif SC", "Songti SC", serif; white-space: pre-wrap; }
+.equation-app .evidence-card p { color: #445267; font: 12px/1.75 "Noto Serif SC", "Songti SC", serif; }
 .equation-app .evidence-heading span { color: var(--ink-soft); font-size: 9px; white-space: nowrap; }
 .equation-exam-counts { grid-template-columns: repeat(2, 1fr); }
 .exam-option-summary { display: flex; justify-content: center; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
 .exam-option-summary span, .exam-option-summary button { border: 1px solid #c9c3b8; border-radius: 999px; background: #f6f3eb; padding: 6px 10px; color: var(--ink-soft); font-size: 10px; }
 .exam-option-summary button { cursor: pointer; color: var(--teal-dark); }
 .equation-review-body p { font-size: 12px; }
-.equation-review-body blockquote { margin: 18px 0; padding: 13px 15px; border-left: 3px solid var(--teal); background: #f3f0e8; color: var(--ink-soft); font: 12px/1.75 "Noto Serif SC", serif; white-space: pre-wrap; }
+.equation-ocr-text { margin: 18px 0; padding: 13px 15px; border-left: 3px solid var(--teal); background: #f3f0e8; color: var(--ink-soft); font: 12px/1.75 "Noto Serif SC", serif; }
 
 @media (max-width: 1120px) {
   .topbar { align-items: center; flex-wrap: wrap; gap: 10px; }

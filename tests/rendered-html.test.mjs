@@ -162,6 +162,11 @@ test("account history supports exams, compact practice, wrong answers, and delet
   assert.match(equationQuiz, /restoreEquationPracticeHistory/);
   assert.match(equationQuiz, /<PracticeHeader>/);
   assert.match(equationQuiz, /active="equations"/);
+  assert.match(equationQuiz, /ReactMarkdown/);
+  assert.match(equationQuiz, /remarkPlugins=\{\[remarkGfm, remarkMath\]\}/);
+  assert.match(equationQuiz, /rehypePlugins=\{\[rehypeKatex\]\}/);
+  assert.match(equationQuiz, /<MarkdownText>\{question\.reaction\.source\.evidenceText\}<\/MarkdownText>/);
+  assert.match(equationQuiz, /<MarkdownText>\{result\.question\.reaction\.source\.evidenceText\}<\/MarkdownText>/);
   assert.match(api, /DELETE FROM history_records WHERE id = \$1 AND user_id = \$2/);
   assert.match(api, /DELETE FROM history_records WHERE user_id = \$1/);
 });
