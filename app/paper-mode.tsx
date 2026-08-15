@@ -6,7 +6,7 @@ import "katex/contrib/mhchem";
 import { formulaElements } from "./equation-policy";
 import { ALL_ELEMENTS, elementScopeTitle, ElementScopePicker } from "./element-scope-picker";
 import { publicPath } from "./public-path";
-import { PracticeBrand, PracticeNavigation } from "./practice-header";
+import { loadSessionResource, peekSessionResource } from "./session-cache";
 import { stateContextText, structuredStateKey, type StateCategory } from "./material-state";
 import { forbiddenColorPair, takeWithFinalConflictCheck } from "./question-policy";
 import {
@@ -471,7 +471,7 @@ function SubstanceQuestion({ item, number, multiple = false }: { item: ColorQues
   return (
     <div className="paper-question">
       <div className="paper-stem"><span className="paper-question-number">{number}.{"\t"}</span><span className="paper-stem-content">下列物质中，{multiple ? `颜色为${item.targetColor}的有` : `何种物质颜色为${item.targetColor}？`}</span></div>
-      <ChoiceLine choices={item.choices.map((choice) => <span><Formula observation={choice} /><small className="paper-state">（{stateContextText(choice)}）</small></span>)} widthHints={item.choices.map((choice) => `${choice.displayLabel}${stateContextText(choice)}`)} />
+      <ChoiceLine choices={item.choices.map((choice) => <span key={choice.id}><Formula observation={choice} /><small className="paper-state">（{stateContextText(choice)}）</small></span>)} widthHints={item.choices.map((choice) => `${choice.displayLabel}${stateContextText(choice)}`)} />
     </div>
   );
 }
@@ -624,10 +624,12 @@ function PaperBlockView({ block, title }: { block: PaperBlock; title: string }) 
   return <EquationQuestion reaction={block.reaction} number={block.number} balancing={block.kind === "balanced"} />;
 }
 
-export default function PaperMode({ onSwitchToColors, onSwitchToEquations }: { onSwitchToColors: () => void; onSwitchToEquations: () => void }) {
-  const [materials, setMaterials] = useState<Materials | null>(null);
-  const [reactions, setReactions] = useState<ReactionDataset | null>(null);
-  const [paper, setPaper] = useState<PaperData | null>(null);
+export default function PaperMode() {
+  const cachedMaterials = peekSessionResource<Materials>(publicPath("/materials.v1.json"));
+  const cachedReactions = peekSessionResource<ReactionDataset>(publicPath("/reactions.quiz.v1.json"));
+  const [materials, setMaterials] = useState<Materials | null>(cachedMaterials);
+  const [reactions, setReactions] = useState<ReactionDataset | null>(cachedReactions);
+  const [paper, setPaper] = useState<PaperData | null>(() => cachedMaterials && cachedReactions ? createPaper(cachedMaterials, cachedReactions, DEFAULT_CONFIG, new Set(ALL_ELEMENTS)) : null);
   const [config, setConfig] = useState<PaperConfig>(DEFAULT_CONFIG);
   const [elementScope, setElementScope] = useState<Set<string>>(() => new Set(ALL_ELEMENTS));
   const [scopeError, setScopeError] = useState<string | null>(null);
@@ -643,11 +645,10 @@ export default function PaperMode({ onSwitchToColors, onSwitchToEquations }: { o
   const documentTitle = useMemo(() => elementScopeTitle(elementScope), [elementScope]);
 
   useEffect(() => {
-    Promise.all([fetch(publicPath("/materials.v1.json")), fetch(publicPath("/reactions.quiz.v1.json"))])
-      .then(async ([materialResponse, reactionResponse]) => {
-        if (!materialResponse.ok || !reactionResponse.ok) throw new Error("试卷题库加载失败");
-        return [await materialResponse.json(), await reactionResponse.json()] as [Materials, ReactionDataset];
-      })
+    Promise.all([
+      loadSessionResource<Materials>(publicPath("/materials.v1.json"), "物质库载入失败"),
+      loadSessionResource<ReactionDataset>(publicPath("/reactions.quiz.v1.json"), "方程式题库载入失败"),
+    ])
       .then(([nextMaterials, nextReactions]) => {
         setMaterials(nextMaterials);
         setReactions(nextReactions);
@@ -744,10 +745,6 @@ export default function PaperMode({ onSwitchToColors, onSwitchToEquations }: { o
   return (
     <main className="paper-mode">
       <nav className="paper-toolbar" aria-label="试卷工具栏">
-        <div className="paper-toolbar-primary">
-          <PracticeBrand compact />
-          <PracticeNavigation active="paper" onColors={onSwitchToColors} onEquations={onSwitchToEquations} />
-        </div>
         <div className="paper-toolbar-controls">
           <div className="paper-counts" aria-label="各题型题数">
             {([

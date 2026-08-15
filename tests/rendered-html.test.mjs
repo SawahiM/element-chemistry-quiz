@@ -97,6 +97,7 @@ test("structured material states drive quiz, paper, and history displays", async
 test("quiz keeps navigable practice and exam histories with post-exam review", async () => {
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
   const practiceHeader = await readFile(new URL("../app/practice-header.tsx", import.meta.url), "utf8");
+  const layout = await readFile(new URL("../app/layout.tsx", import.meta.url), "utf8");
   assert.match(page, /practiceHistory/);
   assert.match(page, /previousQuestion/);
   assert.match(page, /examAnswers/);
@@ -107,7 +108,7 @@ test("quiz keeps navigable practice and exam histories with post-exam review", a
   assert.match(page, /saveAccountData/);
   assert.doesNotMatch(page, /window\.localStorage\.setItem/);
   assert.match(page, /restoreSavedSession/);
-  assert.match(page, /pendingRestore\) restoreSavedSession\(\)/);
+  assert.match(page, /setTimeout\(restoreSavedSession, 0\)/);
   assert.doesNotMatch(page, /是否保留并恢复/);
   assert.doesNotMatch(page, /清空并重新开始/);
   assert.match(page, /practiceDraft/);
@@ -120,8 +121,8 @@ test("quiz keeps navigable practice and exam histories with post-exam review", a
   assert.match(page, /loadPracticeHistory\("color"\)/);
   assert.match(page, /restoreColorPracticeHistory/);
   assert.doesNotMatch(page, /practiceHistory: practiceHistory\.map/);
-  assert.match(page, /<PracticeHeader>/);
-  assert.match(page, /active="colors"/);
+  assert.match(layout, /<AppHeader \/>/);
+  assert.doesNotMatch(page, /<PracticeHeader>/);
   assert.match(practiceHeader, /无机化学基础知识练习/);
   assert.match(practiceHeader, /颜色练习/);
   assert.match(practiceHeader, /方程式练习/);
@@ -162,14 +163,25 @@ test("account history supports exams, compact practice, wrong answers, and delet
   assert.match(historyPage, /deleteHistoryRecord/);
   assert.match(historyPage, /window\.confirm/);
   assert.match(historyPage, /clearHistory/);
+  assert.match(historyPage, /isUnifiedExamPayload/);
+  assert.match(historyPage, /payload\.unified === true/);
+  assert.match(historyPage, /payload\.version === 3/);
+  assert.match(historyPage, /item\.quizKind === "unified"/);
+  assert.match(historyPage, /颜色与方程式综合考试/);
+  assert.match(historyPage, /result\.kind === "color"/);
+  assert.doesNotMatch(historyPage, /ColorExamPayload|EquationExamPayload|颜色部分|方程式部分/);
+  assert.match(historyPage, /history-hero/);
+  assert.doesNotMatch(historyPage, /返回题库|history-back/);
   assert.doesNotMatch(historyPage, /neutral=\{tab === "wrong"\}/);
   assert.match(historyCss, /history-question-grid/);
   assert.match(historyCss, /min-width: 128px/);
   assert.match(historyCss, /width: max-content/);
   assert.match(historyCss, /is-correct \.history-prompt-box/);
   assert.match(historyCss, /is-wrong \.history-prompt-box/);
-  assert.match(historyCss, /history-answer-grid p > span:first-child/);
+  assert.match(historyCss, /history-answer-panel > span:first-child/);
   assert.doesNotMatch(historyCss, /history-answer-grid p span \{/);
+  assert.match(historyPage, /className="history-answer-panel history-standard-answer"/);
+  assert.doesNotMatch(historyPage, /<p className="history-standard-answer"/);
   assert.match(historyStorage, /\/api\/history\?all=true/);
   assert.match(colorQuiz, /color-practice-/);
   assert.match(colorQuiz, /color-exam-/);
@@ -177,8 +189,7 @@ test("account history supports exams, compact practice, wrong answers, and delet
   assert.match(equationQuiz, /equation-exam-/);
   assert.match(equationQuiz, /loadPracticeHistory\("equation"\)/);
   assert.match(equationQuiz, /restoreEquationPracticeHistory/);
-  assert.match(equationQuiz, /<PracticeHeader>/);
-  assert.match(equationQuiz, /active="equations"/);
+  assert.doesNotMatch(equationQuiz, /<PracticeHeader>/);
   assert.match(equationQuiz, /ReactMarkdown/);
   assert.match(equationQuiz, /remarkPlugins=\{\[remarkGfm, remarkMath\]\}/);
   assert.match(equationQuiz, /rehypePlugins=\{\[rehypeKatex\]\}/);
@@ -186,4 +197,5 @@ test("account history supports exams, compact practice, wrong answers, and delet
   assert.match(equationQuiz, /<MarkdownText>\{result\.question\.reaction\.source\.evidenceText\}<\/MarkdownText>/);
   assert.match(api, /DELETE FROM history_records WHERE id = \$1 AND user_id = \$2/);
   assert.match(api, /DELETE FROM history_records WHERE user_id = \$1/);
+  assert.match(api, /record\.quizKind === "unified"/);
 });

@@ -273,7 +273,7 @@ async function history(request: Request): Promise<Response> {
     const record = value as Record<string, unknown>;
     const clientKey = typeof record.clientKey === "string" ? record.clientKey.slice(0, 160) : "";
     const recordType = record.recordType === "exam" || record.recordType === "practice" ? record.recordType : null;
-    const quizKind = record.quizKind === "color" || record.quizKind === "equation" ? record.quizKind : null;
+    const quizKind = record.quizKind === "color" || record.quizKind === "equation" || record.quizKind === "unified" ? record.quizKind : null;
     const source = record.source === "exam" || record.source === "practice" ? record.source : null;
     const payload = JSON.stringify(record.payload ?? null);
     if (!clientKey || !recordType || !quizKind || !source || payload.length > 1_500_000) return jsonError("历史记录格式无效", 400);

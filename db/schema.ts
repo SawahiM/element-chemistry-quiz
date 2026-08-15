@@ -38,7 +38,7 @@ export const historyRecords = pgTable("history_records", {
   userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
   clientKey: text("client_key").notNull(),
   recordType: text("record_type", { enum: ["exam", "practice"] }).notNull(),
-  quizKind: text("quiz_kind", { enum: ["color", "equation"] }).notNull(),
+  quizKind: text("quiz_kind", { enum: ["color", "equation", "unified"] }).notNull(),
   source: text("source", { enum: ["practice", "exam"] }).notNull(),
   correct: boolean("correct"),
   payload: text("payload").notNull(),
