@@ -50,8 +50,7 @@ export function colorTermsHaveAcceptanceRelation(
   rightColorId: string,
 ): boolean {
   if (leftColorId === rightColorId) return false;
-  return Boolean(
-    acceptance.get(leftColorId)?.has(rightColorId)
-    || acceptance.get(rightColorId)?.has(leftColorId),
-  );
+  const leftAccepted = acceptance.get(leftColorId) || new Set([leftColorId]);
+  const rightAccepted = acceptance.get(rightColorId) || new Set([rightColorId]);
+  return [...leftAccepted].some((colorId) => rightAccepted.has(colorId));
 }
