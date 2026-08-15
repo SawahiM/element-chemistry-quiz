@@ -65,16 +65,33 @@ test("server-renders the protected account history route", async () => {
   assert.match(html, /正在验证访问凭据/);
 });
 
-test("bundled dataset stores appendix ranges as multiple accepted colors", async () => {
+test("bundled dataset stores ammonium sulfide as a colorless aqueous solution", async () => {
   const materials = JSON.parse(
     await readFile(new URL("../public/materials.v1.json", import.meta.url), "utf8"),
   );
   const rows = materials.observations.filter((row) => row.formula === "(NH4)2S");
-  assert.deepEqual(
-    [...new Set(rows.map((row) => row.color))].sort(),
-    ["橙色", "黄色"].sort(),
-  );
+  assert.deepEqual([...new Set(rows.map((row) => row.color))], ["无色"]);
+  assert.ok(rows.every((row) => row.stateCategory === "solution" && row.medium === "水"));
   assert.ok(rows.every((row) => row.colorQuestionEligible && row.selectionQuestionEligible));
+});
+
+test("structured material states drive quiz, paper, and history displays", async () => {
+  const materials = JSON.parse(
+    await readFile(new URL("../public/materials.v1.json", import.meta.url), "utf8"),
+  );
+  assert.equal(materials.observations.some((row) => row.formula === "CrF6"), false);
+  const iodineTrifluoride = materials.observations.find((row) => row.formula === "IF3");
+  assert.equal(iodineTrifluoride?.stateCategory, "solid");
+  assert.match(iodineTrifluoride?.conditions || "", /低温下.*-28/);
+
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  const paper = await readFile(new URL("../app/paper-mode.tsx", import.meta.url), "utf8");
+  const history = await readFile(new URL("../app/history/page.tsx", import.meta.url), "utf8");
+  assert.match(page, /stateContextText\(question\.target\)/);
+  assert.match(page, /stateBasisLabel\(observation\)/);
+  assert.match(paper, /structuredStateKey\(item\)/);
+  assert.match(paper, /stateContextText\(choice\)/);
+  assert.match(history, /stateBasisLabel\(item\)/);
 });
 
 test("quiz keeps navigable practice and exam histories with post-exam review", async () => {
@@ -162,6 +179,11 @@ test("account history supports exams, compact practice, wrong answers, and delet
   assert.match(equationQuiz, /restoreEquationPracticeHistory/);
   assert.match(equationQuiz, /<PracticeHeader>/);
   assert.match(equationQuiz, /active="equations"/);
+  assert.match(equationQuiz, /ReactMarkdown/);
+  assert.match(equationQuiz, /remarkPlugins=\{\[remarkGfm, remarkMath\]\}/);
+  assert.match(equationQuiz, /rehypePlugins=\{\[rehypeKatex\]\}/);
+  assert.match(equationQuiz, /<MarkdownText>\{question\.reaction\.source\.evidenceText\}<\/MarkdownText>/);
+  assert.match(equationQuiz, /<MarkdownText>\{result\.question\.reaction\.source\.evidenceText\}<\/MarkdownText>/);
   assert.match(api, /DELETE FROM history_records WHERE id = \$1 AND user_id = \$2/);
   assert.match(api, /DELETE FROM history_records WHERE user_id = \$1/);
 });

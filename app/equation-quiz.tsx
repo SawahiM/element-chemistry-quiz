@@ -3,6 +3,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import katex from "katex";
 import "katex/contrib/mhchem";
+import ReactMarkdown from "react-markdown";
+import rehypeKatex from "rehype-katex";
+import remarkGfm from "remark-gfm";
+import remarkMath from "remark-math";
 import { coefficientIsExact, equationAnswerIsExact, formulaElements } from "./equation-policy";
 import { publicPath } from "./public-path";
 import { PracticeHeader, PracticeNavigation } from "./practice-header";
@@ -105,6 +109,32 @@ function Formula({ value }: { value: string }) {
     output: "html",
   });
   return <span className="eq-formula" aria-label={value} dangerouslySetInnerHTML={{ __html: html }} />;
+}
+
+function normalizeMarkdownMath(value: string): string {
+  return value
+    .replace(/\\\[([\s\S]*?)\\\]/g, (_, expression: string) => `\n$$\n${expression.trim()}\n$$\n`)
+    .replace(/\\\(([\s\S]*?)\\\)/g, (_, expression: string) => `$${expression.trim()}$`);
+}
+
+function MarkdownText({ children }: { children: string }) {
+  return (
+    <div className="markdown-text">
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm, remarkMath]}
+        rehypePlugins={[rehypeKatex]}
+        skipHtml
+        components={{
+          a: ({ node, children: content, ...props }) => {
+            void node;
+            return <a {...props} target="_blank" rel="noreferrer">{content}</a>;
+          },
+        }}
+      >
+        {normalizeMarkdownMath(children)}
+      </ReactMarkdown>
+    </div>
+  );
 }
 
 function coefficient(participant: Participant): string {
@@ -799,7 +829,7 @@ export default function EquationQuiz({ onSwitchToColors, onSwitchToPaper }: { on
                 ).filter(Boolean).join(" + ") || "未作答"}</p>
                 <p><b>标准方程式：</b><Formula value={result.question.reaction.equationCanonical.replace("->", "->")} /></p>
                 <p><b>条件：</b>{conditionLabel(result.question.reaction)}</p>
-                <blockquote>{result.question.reaction.source.evidenceText}</blockquote>
+                <div className="equation-ocr-text"><MarkdownText>{result.question.reaction.source.evidenceText}</MarkdownText></div>
                 <span className="page-reference"><b>{sourcePageLabel(result.question.reaction)}</b><small>PDF 第 {result.question.reaction.source.pdfPage} 页</small></span>
               </div>
             </details>)}
@@ -857,7 +887,7 @@ export default function EquationQuiz({ onSwitchToColors, onSwitchToPaper }: { on
               <span className={isCorrect ? "result-badge good" : "result-badge bad"}>{isCorrect ? "回答正确" : "答案尚不完整"}</span>
               <h2>标准方程式</h2>
               <div className="equation-reference"><Formula value={question.reaction.equationCanonical} /></div>
-              <article className="evidence-card correct-evidence"><div className="evidence-heading"><b>{conditionLabel(question.reaction)}</b><span>{sourcePageLabel(question.reaction)}</span></div><p>{question.reaction.source.evidenceText}</p><span className="page-reference"><b>{sourcePageLabel(question.reaction)}</b><small>PDF 第 {question.reaction.source.pdfPage} 页</small></span></article>
+              <article className="evidence-card correct-evidence"><div className="evidence-heading"><b>{conditionLabel(question.reaction)}</b><span>{sourcePageLabel(question.reaction)}</span></div><MarkdownText>{question.reaction.source.evidenceText}</MarkdownText><span className="page-reference"><b>{sourcePageLabel(question.reaction)}</b><small>PDF 第 {question.reaction.source.pdfPage} 页</small></span></article>
               <details className="page-preview"><summary><span><b>教材原页</b><small>PDF 第 {question.reaction.source.pdfPage} 页</small></span><em>点击展开原页</em></summary><a href={publicPath(`/page-images/pdf_${String(question.reaction.source.pdfPage).padStart(4, "0")}.jpeg`)} target="_blank" rel="noreferrer"><img src={publicPath(`/page-images/pdf_${String(question.reaction.source.pdfPage).padStart(4, "0")}.jpeg`)} alt={`${sourcePageLabel(question.reaction)}原图`} width="1317" height="1871" loading="lazy" /></a></details>
             </div>}
           </aside>

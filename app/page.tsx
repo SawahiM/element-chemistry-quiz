@@ -25,6 +25,14 @@ import {
 } from "./color-semantics";
 import { deleteAccountData, loadAccountData, saveAccountData } from "./account-storage";
 import { appendHistory, loadPracticeHistory, type HistoryRecord } from "./history-storage";
+import {
+  sameStructuredState,
+  stateBasisLabel,
+  stateContextText,
+  stateQualifier,
+  structuredStateKey,
+  type StateCategory,
+} from "./material-state";
 
 type Source = {
   source_id: string;
@@ -49,6 +57,18 @@ type Observation = {
   acceptedColorIds: string[];
   acceptanceReasons: Record<string, string>;
   physicalState: string | null;
+  stateCategory: StateCategory;
+  stateForm: string | null;
+  stateFormRaw: string | null;
+  stateVariantType: string | null;
+  stateVariantLabelRaw: string | null;
+  stateBasis: "explicit" | "contextual" | "reference_inferred" | "unresolved";
+  stateEvidenceText: string;
+  stateEvidenceScope: string;
+  stateConfidence: number;
+  stateInferenceRule: string;
+  stateReferenceCondition: string | null;
+  stateNotes: string | null;
   observationKind: string;
   medium: string | null;
   conditions: string | null;
@@ -339,16 +359,9 @@ function PagePreview({ source }: { source: Source }) {
   );
 }
 
-function qualifier(observation: Observation): string {
-  const parts = [observation.conditions, observation.medium, observation.physicalState].filter(Boolean);
-  return parts.length ? `（${parts.join("；")}）` : "";
-}
-
 function hasSameQualifier(left: Observation, right: Observation): boolean {
-  return left.physicalState === right.physicalState
-    && left.observationKind === right.observationKind
-    && left.medium === right.medium
-    && left.conditions === right.conditions;
+  return sameStructuredState(left, right)
+    && left.observationKind === right.observationKind;
 }
 
 function groupEvidenceObservations(observations: Observation[]): EvidenceGroup[] {
@@ -359,10 +372,8 @@ function groupEvidenceObservations(observations: Observation[]): EvidenceGroup[]
       .sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)));
     const key = JSON.stringify([
       observation.substanceId,
-      observation.physicalState,
+      structuredStateKey(observation),
       observation.observationKind,
-      observation.medium,
-      observation.conditions,
       sourceSignature,
     ]);
     const existing = groups.get(key);
@@ -554,7 +565,7 @@ function ExamReviewCard({
       <div className="exam-review-body">
         <div className="exam-review-prompt">
           {question.format === "color_of" ? (
-            <><Formula observation={question.target} /><span>{qualifier(question.target) || "教材所述通常状态"}是什么颜色？</span></>
+            <><Formula observation={question.target} /><span>{stateQualifier(question.target)}是什么颜色？</span></>
           ) : (
             <><strong>{question.targetColor}</strong><span>{question.format === "which_one_is_color" ? "选择唯一符合的物质" : "选择所有符合的物质"}</span></>
           )}
@@ -585,6 +596,9 @@ function ExamReviewCard({
             return (
               <article className={correctOption ? "evidence-card correct-evidence" : "evidence-card"} key={group.key}>
                 <div className="evidence-heading"><Formula observation={observation} compact /><b>{group.colors.join(" / ")}</b></div>
+                <div className="state-summary" title={observation.stateEvidenceText || undefined}>
+                  <span>{stateContextText(observation)}</span><small>{stateBasisLabel(observation)}</small>
+                </div>
                 {question.format !== "color_of" ? <span className={correctOption ? "evidence-role correct" : "evidence-role"}>{correctOption ? "正确选项" : "其他选项"}</span> : null}
                 {source?.evidence_text ? <MarkdownText>{source.evidence_text}</MarkdownText> : null}
                 {source ? <span className="page-reference"><b>{sourcePageLabel(source)}</b><small>PDF 第 {source.pdf_page} 页</small></span> : null}
@@ -644,7 +658,8 @@ function generateColorQuestion(data: Materials, spec: FormatSpec, previousId?: s
   const preferred = distractorCandidates.filter(
     (item) =>
       item.observationKind === target.observationKind &&
-      (!target.physicalState || item.physicalState === target.physicalState),
+      item.stateCategory === target.stateCategory
+      && (!target.stateForm || item.stateForm === target.stateForm),
   );
   const contextual = uniqueBy(
     [...shuffled(preferred), ...shuffled(distractorCandidates)],
@@ -715,7 +730,7 @@ function generateSingleSubstanceQuestion(data: Materials, spec: FormatSpec, prev
   ).sort((a, b) => {
     const sameKind = Number(b.observationKind === target.observationKind) - Number(a.observationKind === target.observationKind);
     if (sameKind) return sameKind;
-    return Number(b.physicalState === target.physicalState) - Number(a.physicalState === target.physicalState);
+    return Number(sameStructuredState(b, target)) - Number(sameStructuredState(a, target));
   });
   const wrongCount = spec.choices.count - 1;
   const relatedWrong = target.focusElement
@@ -1773,7 +1788,7 @@ function ColorQuiz({ onSwitchToEquations, onSwitchToPaper }: { onSwitchToEquatio
             {format === "color_of" ? (
               <>
                 <div className="hero-formula"><Formula observation={question.target} /></div>
-                <div className="qualifier"><MarkdownText inline>{qualifier(question.target) || "教材所述通常状态"}</MarkdownText></div>
+                <div className="qualifier"><MarkdownText inline>{stateContextText(question.target)}</MarkdownText></div>
                 <h1>是什么颜色？</h1>
               </>
             ) : (
@@ -1800,7 +1815,7 @@ function ColorQuiz({ onSwitchToEquations, onSwitchToPaper }: { onSwitchToEquatio
                   <span className="choice-key">{index + 1}</span>
                   <span className="choice-label">
                     {choice.observation ? <Formula observation={choice.observation} compact /> : choice.label}
-                    {choice.observation && qualifier(choice.observation) ? <small><MarkdownText inline>{qualifier(choice.observation)}</MarkdownText></small> : null}
+                    {choice.observation ? <small><MarkdownText inline>{stateContextText(choice.observation)}</MarkdownText></small> : null}
                   </span>
                   <span className="choice-state">{submitted && correct ? "✓" : submitted && picked ? "×" : format === "which_are_color" ? "□" : "○"}</span>
                 </button>
@@ -1850,6 +1865,9 @@ function ColorQuiz({ onSwitchToEquations, onSwitchToPaper }: { onSwitchToEquatio
                 return (
                   <article className={correctOption ? "evidence-card correct-evidence" : "evidence-card"} key={group.key}>
                     <div className="evidence-heading"><Formula observation={observation} compact /><b>{group.colors.join(" / ")}</b></div>
+                    <div className="state-summary" title={observation.stateEvidenceText || undefined}>
+                      <span>{stateContextText(observation)}</span><small>{stateBasisLabel(observation)}</small>
+                    </div>
                     {question.format !== "color_of" ? <span className={correctOption ? "evidence-role correct" : "evidence-role"}>{correctOption ? "正确选项" : "其他选项"}</span> : null}
                     {source?.evidence_text ? <MarkdownText>{source.evidence_text}</MarkdownText> : null}
                     {source ? <span className="page-reference"><b>{sourcePageLabel(source)}</b><small>PDF 第 {source.pdf_page} 页</small></span> : null}

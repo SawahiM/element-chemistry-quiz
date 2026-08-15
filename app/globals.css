@@ -449,6 +449,9 @@ button { color: inherit; }
 .evidence-card.correct-evidence { border-color: #9cc8be; box-shadow: inset 3px 0 0 var(--teal); }
 .evidence-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
 .evidence-heading b { color: var(--teal-dark); white-space: nowrap; }
+.state-summary { display: flex; align-items: center; gap: 7px; margin-top: 8px; color: var(--ink-soft); font-size: 10px; }
+.state-summary span { font-weight: 700; }
+.state-summary small { padding: 2px 6px; border-radius: 999px; background: #e2ded4; color: var(--teal-dark); font-size: 8px; font-weight: 750; }
 .evidence-card .markdown-text { margin: 11px 0; color: #445267; font: 12px/1.75 "Noto Serif SC", "Songti SC", serif; }
 .markdown-text > :first-child { margin-top: 0; }
 .markdown-text > :last-child { margin-bottom: 0; }
@@ -469,6 +472,7 @@ button { color: inherit; }
 .page-reference small { color: var(--ink-soft); font-size: 9px; font-weight: 500; }
 .evidence-role { display: inline-block; margin-top: 9px; padding: 3px 7px; border-radius: 999px; background: #e2ded4; color: var(--ink-soft); font-size: 9px; font-weight: 700; }
 .evidence-role.correct { color: var(--teal-dark); background: var(--teal-pale); }
+.paper-state { margin-left: .3em; color: #525d69; font-size: .72em; }
 .page-previews { margin-top: 22px; padding-top: 20px; border-top: 1px solid var(--line); }
 .page-previews h3 { margin: 0 0 14px; font: 700 17px/1.35 "Noto Serif SC", "Songti SC", serif; }
 .page-preview { margin: 0 0 22px; overflow: hidden; border: 1px solid #d1cabd; border-radius: 14px; background: #e9e5dc; box-shadow: 0 7px 20px rgba(37, 44, 56, .08); }
@@ -660,14 +664,14 @@ footer { min-height: 38px; display: flex; justify-content: center; gap: 38px; al
 .scope-element-grid { grid-template-columns: repeat(auto-fill, minmax(44px, 1fr)); margin-top: 22px; padding-top: 20px; border-top: 1px solid var(--line); }
 .scope-element-grid button.selected { border-color: var(--teal); background: var(--teal-pale); color: var(--teal-dark); box-shadow: inset 0 0 0 1px var(--teal); }
 .equation-reference { margin: 5px 0 20px; padding: 18px 12px; overflow-x: auto; border: 1px solid #b9d5d1; border-radius: 12px; background: var(--teal-pale); color: var(--teal-dark); text-align: center; font-size: 21px; }
-.equation-app .evidence-card p { color: #445267; font: 12px/1.75 "Noto Serif SC", "Songti SC", serif; white-space: pre-wrap; }
+.equation-app .evidence-card p { color: #445267; font: 12px/1.75 "Noto Serif SC", "Songti SC", serif; }
 .equation-app .evidence-heading span { color: var(--ink-soft); font-size: 9px; white-space: nowrap; }
 .equation-exam-counts { grid-template-columns: repeat(2, 1fr); }
 .exam-option-summary { display: flex; justify-content: center; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
 .exam-option-summary span, .exam-option-summary button { border: 1px solid #c9c3b8; border-radius: 999px; background: #f6f3eb; padding: 6px 10px; color: var(--ink-soft); font-size: 10px; }
 .exam-option-summary button { cursor: pointer; color: var(--teal-dark); }
 .equation-review-body p { font-size: 12px; }
-.equation-review-body blockquote { margin: 18px 0; padding: 13px 15px; border-left: 3px solid var(--teal); background: #f3f0e8; color: var(--ink-soft); font: 12px/1.75 "Noto Serif SC", serif; white-space: pre-wrap; }
+.equation-ocr-text { margin: 18px 0; padding: 13px 15px; border-left: 3px solid var(--teal); background: #f3f0e8; color: var(--ink-soft); font: 12px/1.75 "Noto Serif SC", serif; }
 
 @media (max-width: 1120px) {
   .topbar { align-items: center; flex-wrap: wrap; gap: 10px; }

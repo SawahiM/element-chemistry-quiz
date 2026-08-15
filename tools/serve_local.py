@@ -5,6 +5,7 @@ import argparse
 import mimetypes
 import os
 import re
+import shutil
 import socket
 import subprocess
 import time
@@ -19,7 +20,6 @@ APP_ROOT = Path(__file__).resolve().parents[1]
 TEXTBOOK = APP_ROOT.parent / "无机化学(宋天佑) 4th 下册.pdf"
 STATIC_ROOT = APP_ROOT / ".next" / "static"
 PAGE_IMAGE_ROOT = APP_ROOT.parent / "pages" / "original"
-NODE = Path(r"C:\Users\PeterB\.cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin\node.exe")
 NEXT = APP_ROOT / "node_modules" / "next" / "dist" / "bin" / "next"
 PUBLIC_PORT = 3000
 PUBLIC_HOST = "0.0.0.0"
@@ -192,7 +192,27 @@ def find_free_port() -> int:
         return int(reservation.getsockname()[1])
 
 
-def local_environment() -> dict[str, str]:
+def find_node() -> Path | None:
+    """Find Node without tying the launcher to one Windows user profile."""
+    candidates: list[Path] = []
+    if configured_node := os.environ.get("QUIZ_APP_NODE"):
+        candidates.append(Path(configured_node))
+    if path_node := shutil.which("node"):
+        candidates.append(Path(path_node))
+    candidates.append(
+        Path.home()
+        / ".cache"
+        / "codex-runtimes"
+        / "codex-primary-runtime"
+        / "dependencies"
+        / "node"
+        / "bin"
+        / "node.exe"
+    )
+    return next((candidate.resolve() for candidate in candidates if candidate.is_file()), None)
+
+
+def local_environment(node: Path) -> dict[str, str]:
     """Build an environment that cannot inherit GitHub Pages URL prefixes."""
     environment = {
         key: value
@@ -204,18 +224,20 @@ def local_environment() -> dict[str, str]:
         (value for key, value in os.environ.items() if key.lower() == "path"),
         "",
     )
-    environment["Path"] = f"{NODE.parent};{inherited_path}"
+    environment["Path"] = f"{node.parent};{inherited_path}"
     return environment
 
 
-def build_local_site(environment: dict[str, str]) -> None:
-    print("正在生成本地版网页……", flush=True)
-    subprocess.run(
-        [str(NODE), str(NEXT), "build"],
-        cwd=APP_ROOT,
-        env=environment,
-        check=True,
-    )
+def ensure_port_available(host: str, port: int) -> None:
+    """Fail before starting Next when the public development port is busy."""
+    with socket.socket() as reservation:
+        try:
+            reservation.bind((host, port))
+        except OSError as error:
+            raise SystemExit(
+                f"本地端口 {port} 已被占用。请关闭占用该端口的程序后重试，"
+                f"或运行 serve_local.py --port 其他端口。"
+            ) from error
 
 
 def lan_addresses(port: int) -> list[str]:
@@ -238,17 +260,22 @@ def main() -> int:
     parser.add_argument("--host", default=PUBLIC_HOST)
     parser.add_argument("--port", default=PUBLIC_PORT, type=int)
     args = parser.parse_args()
-    if not NODE.exists() or not NEXT.exists():
-        raise SystemExit("未找到本地网页运行环境。")
-    # A previous GitHub Pages build may have left prefixed asset URLs in dist.
-    # Rebuild without online-only variables before starting the local server.
-    environment = local_environment()
-    build_local_site(environment)
+    node = find_node()
+    if node is None:
+        raise SystemExit(
+            "未找到 Node.js。请安装 Node.js 22，或通过 QUIZ_APP_NODE 指定 node.exe。"
+        )
+    if not NEXT.exists():
+        raise SystemExit("未找到本地依赖，请先在 quiz_app 目录安装依赖。")
+    ensure_port_available(args.host, args.port)
+    # Development mode compiles on demand. It is faster for local testing and
+    # does not touch the standalone production build used by the VPS.
+    environment = local_environment(node)
     flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
     app_port = find_free_port()
     ProxyHandler.app_port = app_port
     app = subprocess.Popen(
-        [str(NODE), str(NEXT), "dev", "--hostname", "127.0.0.1", "--port", str(app_port)],
+        [str(node), str(NEXT), "dev", "--hostname", "127.0.0.1", "--port", str(app_port)],
         cwd=APP_ROOT,
         env=environment,
         creationflags=flags,

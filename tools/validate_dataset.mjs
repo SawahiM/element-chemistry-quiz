@@ -19,6 +19,26 @@ for (const row of materials.observations) {
 }
 
 const missingSources = materials.observations.filter((row) => !row.sources?.length);
+const allowedStateCategories = new Set(["solid", "liquid", "gas", "solution", "unknown"]);
+const formsByCategory = {
+  solid: new Set([null, "crystal", "powder", "precipitate", "film", "amorphous", "bulk", "suspension", "smoke", "other"]),
+  liquid: new Set([null, "melt", "bead", "colloid", "mist", "other"]),
+  gas: new Set([null, "vapor", "flame", "other"]),
+  solution: new Set([null]),
+  unknown: new Set([null]),
+};
+const missingStructuredStates = materials.observations.filter((row) =>
+  !allowedStateCategories.has(row.stateCategory)
+  || !row.physicalState
+  || !row.stateBasis
+  || typeof row.stateConfidence !== "number"
+  || !row.stateInferenceRule
+  || !row.stateEvidenceText
+);
+const incompatibleStructuredStates = materials.observations.filter((row) =>
+  !formsByCategory[row.stateCategory]?.has(row.stateForm ?? null)
+  || (row.stateCategory === "unknown") !== (row.stateBasis === "unresolved")
+);
 const eligibleSingle = materials.observations.filter((row) => row.colorQuestionEligible);
 const eligibleMulti = materials.observations.filter((row) => row.selectionQuestionEligible);
 const acceptedColorIds = (row) => row.acceptedColorIds?.length ? row.acceptedColorIds : [row.colorId];
@@ -52,6 +72,8 @@ if (requiredFormats.some((id) => !language.formats.some((format) => format.id ==
   throw new Error("All three question formats are required");
 }
 if (missingSources.length) throw new Error(`${missingSources.length} observations have no source`);
+if (missingStructuredStates.length) throw new Error(`${missingStructuredStates.length} observations have incomplete structured states`);
+if (incompatibleStructuredStates.length) throw new Error(`${incompatibleStructuredStates.length} observations have incompatible category/form/basis combinations`);
 if (eligibleSingle.length < 4) throw new Error("Not enough single-choice observations");
 if (viableMultiColors < 2) throw new Error("Not enough colors for multiple-choice generation");
 if (singleReverseViable !== reverseTargets.length) {
@@ -79,12 +101,12 @@ if (!leadRows.length || leadRows.some((row) => row.focusElement !== "Pb")) {
 const ammoniumSulfideRows = materials.observations.filter((row) => row.formula === "(NH4)2S");
 const ammoniumSulfideColors = new Set(ammoniumSulfideRows.map((row) => row.color));
 if (
-  ammoniumSulfideColors.size !== 2
-  || !ammoniumSulfideColors.has("黄色")
-  || !ammoniumSulfideColors.has("橙色")
+  ammoniumSulfideColors.size !== 1
+  || !ammoniumSulfideColors.has("无色")
+  || ammoniumSulfideRows.some((row) => row.stateCategory !== "solution" || row.medium !== "水")
   || ammoniumSulfideRows.some((row) => !row.colorQuestionEligible || !row.selectionQuestionEligible)
 ) {
-  throw new Error("(NH4)2S must accept both yellow and orange");
+  throw new Error("(NH4)2S must be represented as a colorless aqueous solution");
 }
 const colorsByQualifiedSubstance = new Map();
 for (const row of materials.observations) {
@@ -113,9 +135,14 @@ console.log(JSON.stringify({
   singleReverseViable,
   reverseTargetPairs: reverseTargets.length,
   focusElementCount: new Set(materials.observations.map((row) => row.focusElement).filter(Boolean)).size,
-  ammoniumSulfideAcceptedColors: [...ammoniumSulfideColors].sort(),
+  ammoniumSulfideColors: [...ammoniumSulfideColors].sort(),
   multiColorQualifiedSubstances,
   whiteColorlessMutualExclusion: true,
+  stateCategories: Object.fromEntries([...allowedStateCategories].map((category) => [
+    category,
+    materials.observations.filter((row) => row.stateCategory === category).length,
+  ])),
+  stateUnknownCount: materials.observations.filter((row) => row.stateCategory === "unknown").length,
   formats: language.formats.map((item) => item.id),
 }, null, 2));
 
