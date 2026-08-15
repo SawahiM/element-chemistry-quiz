@@ -23,12 +23,56 @@ const acceptedNames = (colorName) => {
   return new Set(color.acceptedColorIds.map((id) => nameByColorId.get(id)));
 };
 
-test("standard color connections are directed and preserve conservative composites", () => {
-  assert.deepEqual(acceptedNames("浅黄色"), new Set(["浅黄色", "黄色"]));
+test("standard color connections are directed and connect every range interior to endpoints", () => {
+  assert.deepEqual(acceptedNames("浅黄色"), new Set(["浅黄色", "白色", "黄色"]));
   assert.deepEqual(acceptedNames("黄色"), new Set(["黄色"]));
-  assert.deepEqual(acceptedNames("橙红色"), new Set(["橙红色", "橙色"]));
+  assert.deepEqual(acceptedNames("橙红色"), new Set(["橙红色", "橙色", "红色", "黄色"]));
   assert.deepEqual(acceptedNames("棕黑色"), new Set(["棕黑色", "棕色", "黑色"]));
-  assert.deepEqual(acceptedNames("黄绿色"), new Set(["黄绿色"]));
+  assert.deepEqual(acceptedNames("黄绿色"), new Set(["黄绿色", "黄色", "绿色"]));
+  assert.deepEqual(acceptedNames("黄棕色"), new Set(["黄棕色", "黄色", "棕色"]));
+  assert.deepEqual(acceptedNames("青色"), new Set(["青色", "绿色", "蓝色"]));
+  assert.deepEqual(acceptedNames("橙色"), new Set(["橙色", "红色", "黄色"]));
+});
+
+test("OCR-audited color terms have reviewed relationships and exclude hue-less dark", () => {
+  const auditedTerms = [
+    "亮黄色", "亮绿色", "淡红色", "红黄色", "土黄色", "橄榄绿色", "黑绿色",
+    "白黄色", "红绿色", "灰蓝绿色", "玫瑰色", "深蓝紫色", "黑棕色", "紫黑色",
+    "褐色", "灰绿色", "橘红色", "乳白色", "鲜红色", "黑灰色", "浅红色",
+    "桃红色", "洋红色", "银黄色", "棕褐色",
+  ];
+  assert.ok(auditedTerms.every((name) => colorByName.has(name)));
+  assert.equal(colorByName.has("深色"), false);
+  assert.deepEqual(acceptedNames("红黄色"), new Set(["红黄色", "红色", "黄色", "橙色"]));
+  assert.deepEqual(acceptedNames("灰蓝绿色"), new Set(["灰蓝绿色", "灰蓝色", "蓝绿色", "绿色", "蓝色"]));
+  assert.deepEqual(acceptedNames("深蓝紫色"), new Set(["深蓝紫色", "蓝紫色", "紫色"]));
+  assert.deepEqual(acceptedNames("玫瑰色"), new Set(["玫瑰色", "粉色", "红色"]));
+
+  const roseAlias = materials.rawColorMappings.find((item) => item.raw === "玫瑰");
+  assert.deepEqual(new Set(roseAlias?.colors), new Set(["玫瑰色"]));
+  const pinkOrYellow = materials.rawColorMappings.find((item) => item.raw === "粉红色、黄色");
+  assert.deepEqual(new Set(pinkOrYellow?.colors), new Set(["粉红色", "黄色"]));
+});
+
+test("every term introduced by a range accepts all of that range's endpoints", () => {
+  const colorsById = new Map(materials.colors.map((color) => [color.id, color]));
+  for (const mapping of materials.rawColorMappings.filter((item) => item.kind === "range")) {
+    const endpoints = mapping.normalized
+      .split("-")
+      .map((name) => (name === "无色" || name.endsWith("色") ? name : `${name}色`));
+    const interiors = mapping.colorIds
+      .map((id) => colorsById.get(id))
+      .filter((color) => color && !endpoints.includes(color.name));
+    for (const interior of interiors) {
+      const accepted = acceptedNames(interior.name);
+      for (const endpoint of endpoints) {
+        assert.ok(
+          accepted.has(endpoint),
+          `${interior.name} from ${mapping.raw} must accept endpoint ${endpoint}`,
+        );
+      }
+    }
+  }
 });
 
 test("every raw spelling has a bidirectional standard-term mapping", () => {
@@ -48,7 +92,7 @@ test("white-yellow ranges include endpoints and familiar intermediate terms", ()
   assert.ok(mapping);
   assert.deepEqual(
     new Set(mapping.colors),
-    new Set(["白色", "近白色", "浅黄色", "淡黄色", "黄色"]),
+    new Set(["白色", "浅黄色", "淡黄色", "黄色"]),
   );
 
   const seleniumTetrachloride = materials.observations.filter((item) => item.formula === "SeCl4");
@@ -89,6 +133,29 @@ test("final choices reject acceptance relations between every pair", () => {
     conflicts,
   );
   assert.deepEqual(selected, [lightYellowId, blueId]);
+});
+
+test("final choices also reject colors with a shared acceptable alias", () => {
+  const acceptance = colorAcceptanceIndex(materials.colors);
+  const brownRedId = colorByName.get("棕红色").id;
+  const paleRedId = colorByName.get("淡红色").id;
+  const blueId = colorByName.get("蓝色").id;
+  const conflicts = (left, right) => colorTermsHaveAcceptanceRelation(acceptance, left, right);
+
+  assert.equal(acceptance.get(brownRedId).has(paleRedId), false);
+  assert.equal(acceptance.get(paleRedId).has(brownRedId), false);
+  assert.ok([...acceptance.get(brownRedId)].some((id) => acceptance.get(paleRedId).has(id)));
+  assert.equal(conflicts(brownRedId, paleRedId), true);
+  assert.deepEqual(
+    takeWithFinalConflictCheck(
+      [brownRedId],
+      [paleRedId, blueId],
+      2,
+      (colorId) => colorId,
+      conflicts,
+    ),
+    [blueId],
+  );
 });
 
 test("pairwise acceptance conflicts apply only to substance-to-color questions", async () => {

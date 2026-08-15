@@ -10,9 +10,12 @@ from pathlib import Path
 
 from color_policy import (
     COLOR_GENERALIZATIONS,
+    DISALLOWED_COLOR_TERMS,
+    OCR_ADDITIONAL_RAW_EXPRESSIONS,
     accepted_terms,
     accepted_terms_for_raw,
     expression_kind,
+    known_policy_terms,
     mapped_terms,
     missing_policy_terms,
     normalize_raw_expression,
@@ -30,6 +33,7 @@ COMMON_COMPOSITES = {
     "红棕", "棕红", "红褐", "棕褐", "黄橙", "橙黄", "橙红", "橘红", "橘黄",
     "黄绿", "灰绿", "蓝绿", "蓝黑", "红紫", "蓝紫", "紫红", "紫黑", "粉红",
     "桃红", "玫瑰红", "洋红", "天蓝", "灰蓝", "白绿", "红黑", "绿黑", "绿蓝",
+    "红黄", "黑绿", "白黄", "红绿", "灰蓝绿", "深蓝紫", "黑棕",
 }
 
 STATE_MAP = {
@@ -180,6 +184,8 @@ def normalize_colors(value: str) -> list[dict]:
     colors: list[dict] = []
     seen: set[str] = set()
     for display in atoms:
+        if display in DISALLOWED_COLOR_TERMS:
+            continue
         if display in seen:
             continue
         seen.add(display)
@@ -340,6 +346,19 @@ def build(input_path: Path, db_path: Path, json_path: Path) -> dict:
     raw_mapping_specs: dict[str, dict[str, object]] = {}
     observation_raw_ids: dict[str, set[str]] = defaultdict(set)
 
+    for raw_text in OCR_ADDITIONAL_RAW_EXPRESSIONS:
+        raw_color_id = stable_id("rawcol", raw_text)
+        raw_mapping_specs[raw_color_id] = {
+            "raw": raw_text,
+            "normalized": normalize_raw_expression(raw_text),
+            "kind": expression_kind(raw_text),
+            "mappings": mapped_terms(raw_text),
+        }
+        con.execute(
+            "INSERT OR IGNORE INTO raw_color_expressions VALUES (?, ?, ?, ?)",
+            (raw_color_id, raw_text, normalize_raw_expression(raw_text), expression_kind(raw_text)),
+        )
+
     for row in high:
         formula = normalize_formula(row.get("formula_normalized") or row.get("formula_raw"))
         formula, phase_label = split_formula_phase(formula)
@@ -440,6 +459,20 @@ def build(input_path: Path, db_path: Path, json_path: Path) -> dict:
                 ),
             )
 
+    # Manually reviewed range interiors are standard answer terms even when
+    # the exact standalone spelling does not occur in an observation row.
+    for term in sorted(known_policy_terms()):
+        normalized = normalize_colors(term)[0]
+        con.execute(
+            "INSERT OR IGNORE INTO colors VALUES (?, ?, ?, ?)",
+            (
+                stable_id("col", normalized["key"]),
+                normalized["key"],
+                normalized["display"],
+                normalized["kind"],
+            ),
+        )
+
     color_name_to_id = {
         row["display_name"]: row["color_id"]
         for row in con.execute("SELECT color_id, display_name FROM colors")
@@ -447,6 +480,9 @@ def build(input_path: Path, db_path: Path, json_path: Path) -> dict:
     missing_terms = missing_policy_terms(color_name_to_id)
     if missing_terms:
         raise ValueError(f"Color policy references terms absent from the dataset: {sorted(missing_terms)}")
+    disallowed_terms = DISALLOWED_COLOR_TERMS & set(color_name_to_id)
+    if disallowed_terms:
+        raise ValueError(f"Disallowed color terms entered the dataset: {sorted(disallowed_terms)}")
 
     for source_name, target_names in COLOR_GENERALIZATIONS.items():
         for target_name in target_names:
