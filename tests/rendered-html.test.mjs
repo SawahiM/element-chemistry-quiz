@@ -55,6 +55,8 @@ test("server-renders the credential-check shell before the chemistry quiz", asyn
   assert.match(html, /正在验证访问凭据/);
   assert.doesNotMatch(html, /正在整理物质与颜色关系/);
   assert.doesNotMatch(html, /codex-preview|Starter Project|Building your site/i);
+  const layout = await readFile(new URL("../app/layout.tsx", import.meta.url), "utf8");
+  assert.match(layout, /<html lang="zh-CN" suppressHydrationWarning>/);
 });
 
 test("server-renders the protected account history route", async () => {
@@ -63,6 +65,65 @@ test("server-renders the protected account history route", async () => {
   const html = await response.text();
   assert.match(html, /<title>历史记录 · 元素化学<\/title>/i);
   assert.match(html, /正在验证访问凭据/);
+});
+
+test("server-renders the unlisted administrator route behind the account gate", async () => {
+  const response = await render("/chemquiz-control");
+  assert.equal(response.status, 200);
+  const html = await response.text();
+  assert.match(html, /<title>数据管理 · ChemQuiz<\/title>/i);
+  assert.match(html, /正在验证访问凭据/);
+  assert.match(html, /noindex/i);
+
+  const header = await readFile(new URL("../app/practice-header.tsx", import.meta.url), "utf8");
+  const api = await readFile(new URL("../server/account-api.ts", import.meta.url), "utf8");
+  const adminPage = await readFile(new URL("../app/chemquiz-control/page.tsx", import.meta.url), "utf8");
+  assert.doesNotMatch(header, /chemquiz-control/);
+  assert.match(api, /requireAdmin\(request\)/);
+  assert.match(api, /authorization instanceof Response/);
+  assert.match(api, /registration_enabled/);
+  assert.match(api, /admin_audit_logs/);
+  assert.match(api, /users\.status = 'active'/);
+  assert.doesNotMatch(api, /body\.role/);
+  assert.doesNotMatch(api, /body\.displayName/);
+  assert.doesNotMatch(adminPage, /name="displayName"/);
+  assert.doesNotMatch(adminPage, /name="role"/);
+  assert.match(adminPage, /<form key=\{detail\.user\.id\} className="admin-edit-form"/);
+  assert.match(api, /push\("display_name", value\)/);
+  assert.match(adminPage, /function selectUser\(user: UserRow\)/);
+  assert.match(adminPage, /onClick=\{\(\) => selectUser\(user\)\}/);
+  assert.match(adminPage, /function DataRecord/);
+  assert.match(adminPage, /function HistoryRecord/);
+  assert.match(adminPage, /if \(createRequestPending\.current\) return/);
+  assert.match(adminPage, /disabled=\{creating\}/);
+  assert.doesNotMatch(adminPage, /detail\.(data|history|sessions)/);
+  assert.match(api, /OCTET_LENGTH\(payload\) AS "sizeBytes"/);
+  assert.match(api, /CREATE TABLE IF NOT EXISTS login_events/);
+  assert.match(api, /loginIpAddress\(request\)/);
+  assert.match(api, /CHEMQUIZ_TRUST_PROXY/);
+  assert.match(api, /ip_address AS "ipAddress"/);
+  assert.match(adminPage, /<h3>登录 IP<\/h3>/);
+  const detailStart = api.indexOf("async function adminUserDetail");
+  const detailEnd = api.indexOf("async function adminCreateUser", detailStart);
+  const detailBlock = api.slice(detailStart, detailEnd);
+  assert.doesNotMatch(detailBlock, /history_records|user_data|auth_sessions|payload/);
+});
+
+test("development and production both require a loopback PostgreSQL database", async () => {
+  const database = await readFile(new URL("../db/index.ts", import.meta.url), "utf8");
+  const api = await readFile(new URL("../server/account-api.ts", import.meta.url), "utf8");
+  const manifest = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
+  const launcher = await readFile(new URL("../启动本地题库.bat", import.meta.url), "utf8");
+
+  assert.match(database, /process\.env\.DATABASE_URL/);
+  assert.match(database, /\["127\.0\.0\.1", "localhost", "::1", "\[::1\]"\]/);
+  assert.match(database, /getDatabase/);
+  assert.match(api, /getDatabase\(\)\.query/);
+  assert.equal(manifest.dependencies.postgres, "^3.4.9");
+  assert.equal(manifest.dependencies["@electric-sql/pglite"], undefined);
+  assert.equal(manifest.dependencies["drizzle-orm"], undefined);
+  assert.match(launcher, /DATABASE_URL=postgresql:\/\/quizapp:.*@127\.0\.0\.1:5432\/quizapp/);
+  assert.doesNotMatch(`${database}\n${api}`, /PGlite|neon\.tech/i);
 });
 
 test("bundled dataset stores ammonium sulfide as a colorless aqueous solution", async () => {
