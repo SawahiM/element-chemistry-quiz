@@ -5,6 +5,7 @@ import argparse
 import mimetypes
 import os
 import re
+import select
 import shutil
 import socket
 import subprocess
@@ -38,12 +39,18 @@ class ProxyHandler(BaseHTTPRequestHandler):
         self.route_request(head_only=True)
 
     def do_GET(self) -> None:
-        self.route_request(head_only=False)
+        if self.is_websocket_upgrade():
+            self.proxy_websocket()
+        else:
+            self.route_request(head_only=False)
 
     def do_POST(self) -> None:
         self.proxy_to_app(head_only=False)
 
     def do_PUT(self) -> None:
+        self.proxy_to_app(head_only=False)
+
+    def do_PATCH(self) -> None:
         self.proxy_to_app(head_only=False)
 
     def do_DELETE(self) -> None:
@@ -66,6 +73,46 @@ class ProxyHandler(BaseHTTPRequestHandler):
             self.serve_static(static_path, head_only=head_only)
         else:
             self.proxy_to_app(head_only=head_only)
+
+    def is_websocket_upgrade(self) -> bool:
+        connection_tokens = {
+            token.strip().lower()
+            for token in self.headers.get("Connection", "").split(",")
+        }
+        return (
+            self.headers.get("Upgrade", "").lower() == "websocket"
+            and "upgrade" in connection_tokens
+        )
+
+    def proxy_websocket(self) -> None:
+        """Tunnel Next.js development HMR without interpreting WebSocket frames."""
+        upstream: socket.socket | None = None
+        try:
+            upstream = socket.create_connection(("127.0.0.1", self.app_port), timeout=10)
+            request = [f"{self.command} {self.path} {self.request_version}\r\n"]
+            request.extend(f"{key}: {value}\r\n" for key, value in self.headers.items())
+            request.append("\r\n")
+            upstream.sendall("".join(request).encode("iso-8859-1"))
+            upstream.settimeout(None)
+            self.connection.settimeout(None)
+            peers = (self.connection, upstream)
+            while True:
+                readable, _, exceptional = select.select(peers, [], peers, 60)
+                if exceptional:
+                    return
+                for source in readable:
+                    payload = source.recv(64 * 1024)
+                    if not payload:
+                        return
+                    target = upstream if source is self.connection else self.connection
+                    target.sendall(payload)
+        except OSError as error:
+            print(f"[proxy] HMR WebSocket 暂不可用：{error}", flush=True)
+            if upstream is None:
+                self.send_error(HTTPStatus.BAD_GATEWAY, "WebSocket upstream unavailable")
+        finally:
+            if upstream is not None:
+                upstream.close()
 
     def page_image_path(self, request_path: str) -> Path | None:
         filename = unquote(request_path.removeprefix("/page-images/"))
@@ -150,8 +197,16 @@ class ProxyHandler(BaseHTTPRequestHandler):
         body = self.rfile.read(content_length) if content_length else None
         headers = {
             key: value for key, value in self.headers.items()
-            if key.lower() not in {"connection", "content-length"}
+            if key.lower() not in {
+                "connection", "content-length", "x-forwarded-for", "x-forwarded-host",
+                "x-forwarded-proto", "x-real-ip",
+            }
         }
+        client_ip = self.client_address[0]
+        headers["X-Real-IP"] = client_ip
+        headers["X-Forwarded-For"] = client_ip
+        headers["X-Forwarded-Host"] = self.headers.get("Host", "127.0.0.1:3000")
+        headers["X-Forwarded-Proto"] = "http"
         try:
             connection.request(self.command, self.path, body=body, headers=headers)
             response = connection.getresponse()
@@ -291,6 +346,24 @@ def lan_addresses(port: int) -> list[str]:
     return [f"http://{address}:{port}" for address in usable]
 
 
+def verify_local_postgres() -> None:
+    database_url = os.environ.get("DATABASE_URL", "").strip()
+    if not database_url:
+        raise SystemExit("未配置 DATABASE_URL；开发环境和 VPS 均必须使用本机 PostgreSQL 17。")
+    parsed = urlsplit(database_url)
+    if parsed.scheme not in {"postgres", "postgresql"} or parsed.hostname not in {"127.0.0.1", "localhost", "::1"}:
+        raise SystemExit("DATABASE_URL 必须指向本机 PostgreSQL（127.0.0.1、localhost 或 ::1）。")
+    port = parsed.port or 5432
+    try:
+        with socket.create_connection((parsed.hostname, port), timeout=2):
+            return
+    except OSError as error:
+        raise SystemExit(
+            f"无法连接本机 PostgreSQL {parsed.hostname}:{port}。请先安装并启动 PostgreSQL 17，"
+            "并创建 quizapp 数据库和账户。"
+        ) from error
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--no-open", action="store_true")
@@ -304,6 +377,7 @@ def main() -> int:
         )
     if not NEXT.exists():
         raise SystemExit("未找到本地依赖，请先在 quiz_app 目录安装依赖。")
+    verify_local_postgres()
     server = create_public_server(args.host, args.port)
     # Development mode compiles on demand. It is faster for local testing and
     # does not touch the standalone production build used by the VPS.
@@ -323,7 +397,12 @@ def main() -> int:
         wait_for_app(app, app_port)
         address = f"http://127.0.0.1:{args.port}"
         print("元素化学题库已启动：", flush=True)
-        for available_address in lan_addresses(args.port):
+        available_addresses = (
+            [address]
+            if args.host in {"127.0.0.1", "localhost"}
+            else lan_addresses(args.port)
+        )
+        for available_address in available_addresses:
             print(f"  {available_address}", flush=True)
         if not args.no_open:
             webbrowser.open(address)

@@ -105,7 +105,6 @@ git diff --stat origin/main...HEAD
 ```text
 @next/env
 @swc/helpers
-drizzle-orm
 katex
 postgres
 react-markdown
@@ -120,7 +119,7 @@ remark-math
 
 ```powershell
 $requiredRuntimePackages = @(
-  '@next/env', '@swc/helpers', 'drizzle-orm', 'katex', 'postgres',
+  '@next/env', '@swc/helpers', 'katex', 'postgres',
   'react-markdown', 'rehype-katex', 'remark-gfm', 'remark-math'
 )
 foreach ($package in $requiredRuntimePackages) {
@@ -132,6 +131,10 @@ foreach ($package in $requiredRuntimePackages) {
 ```
 
 这里的 `$stage` 必须是即将压缩的发布包根目录，而不是仓库根目录。
+
+开发环境与 VPS 统一使用 PostgreSQL 17。`DATABASE_URL` 必须指向 `127.0.0.1`、`localhost` 或 `::1`；应用会拒绝 Neon 和任何其他远程数据库主机。VPS 的 `/etc/quizapp.env` 还应设置 `CHEMQUIZ_TRUST_PROXY=1`，本机调试启动脚本会设置同一变量。
+
+所有注册、登录和游客会话创建都会写入 `login_events`，记录登录时间和来源 IP。Nginx 必须覆盖而不是追加客户端传入的 `X-Forwarded-For`；应用仅在 `CHEMQUIZ_TRUST_PROXY=1` 时读取 `X-Real-IP`/`X-Forwarded-For`。
 
 ### 4.2 上传前本机启动发布包
 

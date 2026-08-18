@@ -13,6 +13,7 @@ EnvironmentFile=/etc/quizapp.env
 Environment=NODE_ENV=production
 Environment=HOSTNAME=127.0.0.1
 Environment=PORT=3000
+Environment=CHEMQUIZ_TRUST_PROXY=1
 Environment=NODE_OPTIONS=--max-old-space-size=192
 ExecStart=/usr/local/bin/node server.js
 Restart=on-failure
